@@ -56,7 +56,7 @@ def _rows(opps: list[Opportunity]) -> str:
             f"<td>{html.escape(o.agency)}</td>"
             f"<td>{html.escape(r['location'] or o.location_hint or '—')}<div class='sub'>{html.escape(r['location_evidence'])}</div></td>"
             f"<td class='num'>{dist}</td>"
-            f"<td>{html.escape(o.due_text or r['due'] or '—')}</td>"
+            f"<td>{html.escape(o.due_text or r['due']) if (o.due_text or r['due']) else '<span class=sub>not listed — check posting</span>'}</td>"
             f"<td><span class='cat {o.category}'>{html.escape(o.category)}</span></td>"
             f"<td>{html.escape(o.source)}</td></tr>")
     return "\n".join(out)

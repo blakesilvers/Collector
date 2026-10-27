@@ -22,8 +22,22 @@ Reports land in `reports/rfps_YYYY-MM-DD.{html,csv,json}`. Open the HTML file in
 |---|---|---|
 | **Texas ESBD** (txsmartbuy.gov) | State agencies (TxDOT, HHSC, TFC, universities) and the local Texas buyers that choose to post there | none |
 | **SAM.gov** | Federal work: VA clinics, Corps of Engineers lakes, federal courthouses, post offices, Barksdale AFB, Red River Army Depot | free API key |
-| **Watched pages** | City, county, ISD and college bid pages around Tyler, configured in `config.toml` under `[[pages]]` | none |
-| **Portals (manual)** | Buyers on login or JavaScript portals (Bonfire, BidNet, IonWave, Public Purchase). These are listed in the report as a checklist | register for their alerts |
+| **Watched pages** | 33 city, county, ISD and college bid pages around Tyler (Bonfire, CivicPlus, BidNet Direct, IonWave, Jaggaer, Bid Express and plain pages), configured in `config.toml` under `[[pages]]` | none |
+| **Portals (manual)** | 10 buyers this tool can't read: City of Tyler, Tyler ISD, Paris, Texarkana, Kilgore College, Greenville, Mount Pleasant, Palestine, Terrell, Lufkin. These are listed in every report as a checklist | register for their alerts |
+
+### Adding a watched page
+
+```toml
+[[pages]]
+name = "City of Example"
+url = "https://www.example-tx.gov/Bids.aspx"
+location = "Example, TX"   # used for distance
+type = "html"              # html (default) | rss | bonfire
+```
+
+`bonfire` takes any `https://<agency>.bonfirehub.com/...` URL and reads the portal's
+public JSON feed. CivicPlus `Bids.aspx`, BidNet Direct agency pages, IonWave
+`SourcingEvents.aspx?SourceType=1` and Jaggaer public-event pages all work as `html`.
 
 ### SAM.gov API key
 1. Sign in at sam.gov, open **Account Details**, and generate a **Public API Key**.
@@ -77,8 +91,8 @@ Each run updates `data/rfps.sqlite`, so the report marks only first-time bids as
 
 ## Known gaps
 
-* Many local buyers use portals that need a login or render with JavaScript
-  (Bonfire, BidNet Direct, IonWave, Public Purchase, DemandStar). They can't be scanned
+* Some local buyers use portals that render only with JavaScript or block automated
+  access (PlanetBids, Beacon, OpenGov, and cityoftyler.org itself). They can't be scanned
   here. They are listed under `[[portals]]` and shown in every report as a checklist.
   Registering as a vendor on each one gets you email alerts, which is the reliable path.
 * Louisiana (LaPAC), Arkansas and Oklahoma state portals are not integrated.
@@ -88,6 +102,9 @@ Each run updates `data/rfps.sqlite`, so the report marks only first-time bids as
   RFPs. This tool finds public-sector work only.
 * Watched-page scanning is heuristic: it reads link, row and list text. A page redesign
   can break it silently, and any errors appear at the bottom of the report.
+* Many agency pages leave closed bids posted and show no due date. When a listing names
+  only past years (e.g. "2024-03 RFP ...") it is treated as expired. Otherwise the report
+  shows **"not listed — check posting"**, and you must open the document to see whether it's still open.
 
 ## Tests
 

@@ -83,3 +83,235 @@ max_pages_per_query = 3
 "Paris District" = "Paris, TX"
 
 # Agency bid pages scanned on every run (see README).
+# Each entry: name, url, location ("City, ST" used for distance), type
+# (html | rss | bonfire). Set enabled = false to skip one. All URLs below
+# were verified to load on 2026-10-27.
+
+# --- Bonfire portals (read via JSON) ---
+[[pages]]
+name = "UT Tyler / UT Health Science Center Tyler"
+url = "https://uttyler.bonfirehub.com/portal/?tab=openOpportunities"
+location = "Tyler, TX"
+type = "bonfire"
+
+[[pages]]
+name = "Smith County"
+url = "https://smithcounty.bonfirehub.com/portal/?tab=openOpportunities"
+location = "Tyler, TX"
+type = "bonfire"
+
+[[pages]]
+name = "Gregg County / East Texas Regional Airport"
+url = "https://cogreggtx.bonfirehub.com/portal/?tab=openOpportunities"
+location = "Longview, TX"
+type = "bonfire"
+
+[[pages]]
+name = "City of Dallas"
+url = "https://dallascityhall.bonfirehub.com/portal/?tab=openOpportunities"
+location = "Dallas, TX"
+type = "bonfire"
+
+[[pages]]
+name = "Rockwall ISD"
+url = "https://rockwallisd.bonfirehub.com/portal/?tab=openOpportunities"
+location = "Rockwall, TX"
+type = "bonfire"
+
+# --- CivicPlus Bids.aspx pages ---
+[[pages]]
+name = "City of Longview"
+url = "https://www.longviewtexas.gov/Bids.aspx"
+location = "Longview, TX"
+
+[[pages]]
+name = "City of Athens"
+url = "https://www.athenstx.gov/Bids.aspx"
+location = "Athens, TX"
+
+[[pages]]
+name = "City of Nacogdoches"
+url = "https://www.nactx.us/Bids.aspx"
+location = "Nacogdoches, TX"
+
+[[pages]]
+name = "City of Jacksonville"
+url = "https://www.jacksonvilletx.org/Bids.aspx"
+location = "Jacksonville, TX"
+
+[[pages]]
+name = "City of Kilgore"
+url = "https://www.cityofkilgore.com/Bids.aspx"
+location = "Kilgore, TX"
+
+[[pages]]
+name = "City of Henderson"
+url = "https://www.hendersontx.us/Bids.aspx"
+location = "Henderson, TX"
+
+[[pages]]
+name = "City of Marshall"
+url = "https://www.marshalltexas.net/Bids.aspx"
+location = "Marshall, TX"
+
+[[pages]]
+name = "City of Corsicana"
+url = "https://www.cityofcorsicana.com/Bids.aspx"
+location = "Corsicana, TX"
+
+[[pages]]
+name = "Henderson County"
+url = "https://www.henderson-county.com/Bids.aspx"
+location = "Athens, TX"
+
+[[pages]]
+name = "Bowie County"
+url = "https://www.bowiecounty.org/Bids.aspx"
+location = "New Boston, TX"
+
+[[pages]]
+name = "Nacogdoches County"
+url = "https://www.nacogdochesco.gov/Bids.aspx"
+location = "Nacogdoches, TX"
+
+# --- BidNet Direct agency pages (public listing, no login needed to see titles) ---
+[[pages]]
+name = "City of Mesquite"
+url = "https://www.bidnetdirect.com/texas/cityofmesquite"
+location = "Mesquite, TX"
+
+[[pages]]
+name = "City of Sulphur Springs"
+url = "https://www.bidnetdirect.com/texas/cityofsulphursprings"
+location = "Sulphur Springs, TX"
+
+[[pages]]
+name = "Dallas County"
+url = "https://www.bidnetdirect.com/texas/dallas-county"
+location = "Dallas, TX"
+
+[[pages]]
+name = "Rockwall County"
+url = "https://www.bidnetdirect.com/texas/rockwallcounty"
+location = "Rockwall, TX"
+
+[[pages]]
+name = "City of Shreveport"
+url = "https://www.bidnetdirect.com/louisiana/cityofshreveport"
+location = "Shreveport, LA"
+
+[[pages]]
+name = "City of Bossier City"
+url = "https://www.bidnetdirect.com/louisiana/cityofbossiercity"
+location = "Bossier City, LA"
+
+# --- IonWave / Jaggaer / Bid Express (server-rendered) ---
+[[pages]]
+name = "City of Garland"
+url = "https://garlandtx.ionwave.net/SourcingEvents.aspx?SourceType=1"
+location = "Garland, TX"
+
+[[pages]]
+name = "Longview ISD"
+url = "https://longviewisd.ionwave.net/SourcingEvents.aspx?SourceType=1"
+location = "Longview, TX"
+
+[[pages]]
+name = "Stephen F. Austin State University"
+url = "https://bids01.jaggaer.com/apps/Router/PublicEvent?CustomerOrg=SFASU"
+location = "Nacogdoches, TX"
+
+[[pages]]
+name = "Caddo Parish Commission"
+url = "https://bidexpress.com/businesses/2311/home"
+location = "Shreveport, LA"
+
+# --- Plain agency pages ---
+[[pages]]
+name = "Rusk County"
+url = "https://www.ruskcountytx.gov/page/County.Auditor"
+location = "Henderson, TX"
+
+[[pages]]
+name = "Harrison County"
+url = "https://www.harrisoncountytexas.gov/page/Bids.Proposals"
+location = "Marshall, TX"
+
+[[pages]]
+name = "Anderson County"
+url = "https://www.andersoncountytx.gov/page/CA.Purchasing"
+location = "Palestine, TX"
+
+[[pages]]
+name = "Cherokee County"
+url = "http://www.co.cherokee.tx.us/ips/cms/index.html"
+location = "Rusk, TX"
+
+[[pages]]
+name = "Tyler Junior College"
+url = "https://tjc.edu/rfp-rfq-bid-opportunities/"
+location = "Tyler, TX"
+
+[[pages]]
+name = "Whitehouse ISD"
+url = "https://www.whitehouseisd.org/35131_3"
+location = "Whitehouse, TX"
+
+[[pages]]
+name = "Lindale ISD"
+url = "https://www.lindaleeagles.org/notices"
+location = "Lindale, TX"
+timeout = 90
+
+# Buyers this tool cannot read: JavaScript-only portals, bot challenges, or
+# sites that blocked automated access when checked. Shown in every report as a
+# checklist. Register as a vendor on each to get email alerts.
+[[portals]]
+name = "City of Tyler – Purchasing"
+url = "https://www.cityoftyler.org/government/departments/purchasing"
+notes = "Blocked automated access when checked (URL not verified); check in a browser. Also covers Tyler Pounds Regional Airport."
+
+[[portals]]
+name = "Tyler ISD – RFPs"
+url = "https://tylerisdtx.sites.thrillshare.com/documents/departments/purchasing/rfp/714162"
+notes = "Listings load from embedded JSON; check by hand."
+
+[[portals]]
+name = "City of Paris – PlanetBids"
+url = "https://vendors.planetbids.com/portal/70125/bo/bo-search"
+notes = "JavaScript portal."
+
+[[portals]]
+name = "City of Texarkana TX – Beacon"
+url = "https://www.beaconbid.com/solicitations/city-of-texarkana/open"
+notes = "JavaScript portal."
+
+[[portals]]
+name = "Kilgore College – Beacon"
+url = "https://www.beaconbid.com/solicitations/kilgore-college/open"
+notes = "JavaScript portal."
+
+[[portals]]
+name = "City of Greenville – OpenGov"
+url = "https://procurement.opengov.com/portal/greenvilletx"
+notes = "Bot challenge."
+
+[[portals]]
+name = "City of Mount Pleasant – OpenGov"
+url = "https://procurement.opengov.com/portal/mpcity"
+notes = "Bot challenge."
+
+[[portals]]
+name = "City of Palestine"
+url = "https://www.cityofpalestinetx.com"
+notes = "Bot challenge when checked; find the bids page in a browser."
+
+[[portals]]
+name = "City of Terrell"
+url = "https://www.terrelltx.gov/Bids.aspx"
+notes = "Bot challenge when checked (URL not verified)."
+
+[[portals]]
+name = "City of Lufkin"
+url = "https://www.cityoflufkin.com"
+notes = "No online bid list found; reportedly uses BidNet/CivCast. Ask purchasing to add you to their bidder list."

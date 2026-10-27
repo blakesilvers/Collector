@@ -56,8 +56,16 @@ def choose_location(o: Opportunity, office: geo.Location) -> None:
         o.distance_miles, o.location = best
 
 
+_ADDENDUM = re.compile(r"\b(?:addend(?:um|a)|amendment|advertisement|notice|q\s*&\s*a|questions?|answers?|bid tab\w*|tabulation|pre[- ]?bid|attachment|exhibit)\b.*$", re.I)
+_DATEISH = re.compile(r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}/\d{1,2}/\d{2,4}\b")
+
+
 def _norm(t: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", t.lower()).strip()
+    """Dedupe key: addenda, Q&A and dates fold into the parent solicitation."""
+    full = re.sub(r"[^a-z0-9]+", " ", _DATEISH.sub("", t).lower()).strip()
+    base = re.sub(r"[^a-z0-9]+", " ", _ADDENDUM.sub("", _DATEISH.sub("", t)).lower()).strip()
+    # Only fold when a real title is left ("Notice to Bidders: ..." keeps its text).
+    return base if len(base) >= 8 else full
 
 
 def run(args) -> int:

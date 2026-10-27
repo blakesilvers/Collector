@@ -50,6 +50,11 @@ class MatchingTests(unittest.TestCase):
         self.assertGreaterEqual(o.match_score, 2)
         self.assertTrue(all(t.endswith("(description)") for t in o.match_terms))
 
+    def test_addenda_fold_into_parent(self):
+        self.assertEqual(cli._norm("RFP #26-08 Custodial Services Addendum #3 2026-03-25"),
+                         cli._norm("RFP #26-08 Custodial Services"))
+        self.assertNotEqual(cli._norm("Notice to Bidders - Window Cleaning"), cli._norm("Notice to Bidders - Paving"))
+
     def test_exclude(self):
         o = Opportunity(source="t", source_id="1", title="Window Cleaning Services - Lubbock")
         score(o, exclude=["lubbock"])
@@ -134,8 +139,34 @@ class SourceParsingTests(unittest.TestCase):
         self.assertTrue(any(i.url == "https://example.gov/bid/7" for i in matched))
         self.assertFalse(any("Asphalt" in i.title for i in matched))
         self.assertFalse(any("var x" in i.title for i in items))
-        row = next(i for i in matched if i.title.startswith("Bid 26-07 Window Cleaning City Hall Closes"))
-        self.assertEqual(row.due, date(2099, 12, 15))
+        bid7 = [i for i in items if i.url == "https://example.gov/bid/7"]
+        self.assertEqual(len(bid7), 1)  # link and its row collapse into one item
+        self.assertEqual(bid7[0].title, "Bid 26-07 Window Cleaning City Hall")
+        self.assertEqual(bid7[0].due, date(2099, 12, 15))
+
+    def test_stale_and_encoded_links(self):
+        page = {"name": "Rusk County", "url": "https://example.gov/page/a", "location": "Henderson, TX"}
+        html = b"""<ul><li><a href="/docs/RFP Tax Office Powerwashing.pdf">2019-01 RFP Tax Office Pressure Washing</a></li>
+        <li><a href="/docs/b.pdf">2099-02 RFP Pressure Washing</a></li></ul>"""
+        with mock.patch.object(pages, "request", return_value=html):
+            items = {i.title: i for i in pages.fetch_page(page)}
+        old = items["2019-01 RFP Tax Office Pressure Washing"]
+        self.assertEqual(old.due, date(2019, 12, 31))
+        self.assertEqual(old.url, "https://example.gov/docs/RFP%20Tax%20Office%20Powerwashing.pdf")
+        self.assertIsNone(items["2099-02 RFP Pressure Washing"].due)
+
+    def test_bonfire(self):
+        page = {"name": "UT Tyler", "url": "https://uttyler.bonfirehub.com/portal/?tab=openOpportunities",
+                "location": "Tyler, TX", "type": "bonfire"}
+        payload = {"payload": {"projects": {"9": {"ProjectID": "9", "ReferenceID": "RFP 750-1",
+                   "ProjectName": "Campus Window Cleaning", "DateClose": "2099-03-04 20:00:00"}}}}
+        with mock.patch.object(pages, "request", return_value=json.dumps(payload).encode()) as req:
+            items = pages.fetch_page(page)
+        req.assert_called_once()
+        self.assertTrue(req.call_args[0][0].endswith("/PublicPortal/getOpenPublicOpportunitiesSectionData"))
+        self.assertEqual(items[0].title, "RFP 750-1 Campus Window Cleaning")
+        self.assertEqual(items[0].url, "https://uttyler.bonfirehub.com/opportunities/9")
+        self.assertEqual(items[0].due, date(2099, 3, 4))
 
     def test_rss_page(self):
         page = {"name": "Smith County", "url": "https://example.gov/rss", "location": "Tyler, TX", "type": "rss"}

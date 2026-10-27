@@ -7,21 +7,25 @@ matcher then screens. The page's configured location is used for distance.
 
 Types:
   html - any server-rendered page (CivicPlus Bids.aspx, plain city pages, ...)
-  rss  - an RSS/Atom feed (CivicPlus: /RSSFeed.aspx?ModID=76&CID=All-bids.xml)
-Portals that render bids with JavaScript (Bonfire, BidNet, IonWave, Public
-Purchase) show nothing to this scanner; list them under `[[portals]]` so the
-report reminds you to check them by hand or via their email alerts.
+  rss     - an RSS/Atom feed
+  bonfire - a <sub>.bonfirehub.com portal (read through its public JSON feed)
+CivicPlus Bids.aspx, BidNet Direct agency pages, IonWave SourcingEvents.aspx
+and Jaggaer public-event pages are server-rendered and work as `html`.
+Portals that only render with JavaScript or sit behind a bot challenge
+(PlanetBids, Beacon, OpenGov) show nothing to this scanner; list them under
+`[[portals]]` so the report reminds you to check them by hand.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import xml.etree.ElementTree as ET
 from datetime import date
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 from .. import geo
 from ..http import request
@@ -30,7 +34,7 @@ from ..models import Opportunity
 log = logging.getLogger(__name__)
 
 _BLOCKS = {"tr", "li", "a", "h2", "h3", "h4", "p", "dt", "dd"}
-_DATE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{2,4})\b|\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})", re.I)
+_DATE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b|\b(\d{1,2})/(\d{1,2})/(\d{2,4})\b|\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})", re.I)
 _MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
 
 
@@ -76,17 +80,32 @@ def _first_dates(text: str) -> list[date]:
     out = []
     for m in _DATE.finditer(text):
         try:
-            if m.group(1):
-                y = int(m.group(3)); y = y + 2000 if y < 100 else y
-                out.append(date(y, int(m.group(1)), int(m.group(2))))
+            g = m.groups()
+            if g[0]:
+                out.append(date(int(g[0]), int(g[1]), int(g[2])))
+            elif g[3]:
+                y = int(g[5]); y = y + 2000 if y < 100 else y
+                out.append(date(y, int(g[3]), int(g[4])))
             else:
-                out.append(date(int(m.group(6)), _MONTHS[m.group(4)[:3].lower()], int(m.group(5))))
+                out.append(date(int(g[8]), _MONTHS[g[6][:3].lower()], int(g[7])))
         except ValueError:
             continue
     return out
 
 
 def _guess_due(text: str) -> date | None:
+    """Due date from listing text; a listing that names only past years counts as
+    due on Dec 31 of the latest one, so stale postings fall out with past-due bids."""
+    due = _explicit_due(text)
+    if due:
+        return due
+    years = [int(y) for y in re.findall(r"(?<!\d)(20\d{2})(?!\d)", text)]
+    if years and max(years) < date.today().year:
+        return date(max(years), 12, 31)
+    return None
+
+
+def _explicit_due(text: str) -> date | None:
     m = re.search(r"(?:due|clos\w*|deadline|opening|open)\W{0,20}(.{0,40})", text, re.I)
     if m:
         ds = _first_dates(m.group(1))
@@ -105,7 +124,7 @@ def _location(page: dict) -> geo.Location | None:
 
 
 def _opp(page: dict, title: str, link: str | None, desc: str = "", posted=None) -> Opportunity:
-    url = urljoin(page["url"], link) if link else page["url"]
+    url = quote(urljoin(page["url"], link.strip()), safe=":/?#[]@!$&'()*+,;=%~") if link else page["url"]
     sid = hashlib.sha1((url + "|" + title).encode()).hexdigest()[:16]
     loc = _location(page)
     return Opportunity(
@@ -123,19 +142,52 @@ def _opp(page: dict, title: str, link: str | None, desc: str = "", posted=None) 
 
 
 def fetch_page(page: dict) -> list[Opportunity]:
-    raw = request(page["url"], timeout=float(page.get("timeout", 45)), retries=1)
     kind = page.get("type", "html")
+    if kind == "bonfire":
+        return _fetch_bonfire(page)
+    raw = request(page["url"], timeout=float(page.get("timeout", 45)), retries=1)
     if kind == "rss":
         return _parse_rss(page, raw)
     p = _Collector()
     p.feed(raw.decode("utf-8", "replace"))
-    seen, out = set(), []
+    # A link and the table row around it both become items; keep one per link,
+    # titled by the shortest text and dated from the longest (the full row).
+    by_href: dict[str, list[str]] = {}
+    out, seen = [], set()
     for text, href in p.items:
-        k = (text[:200], href)
-        if k in seen:
+        if href:
+            by_href.setdefault(href, []).append(text)
+        elif text not in seen:
+            seen.add(text)
+            out.append(_opp(page, text[:300], None, desc=text if len(text) > 300 else ""))
+    for href, texts in by_href.items():
+        title = min(texts, key=len)[:300]
+        context = max(texts, key=len)
+        o = _opp(page, title, href, desc=context if context != title else "")
+        out.append(o)
+    return out
+
+
+def _fetch_bonfire(page: dict) -> list[Opportunity]:
+    """Bonfire portals render with JavaScript but expose open projects as JSON."""
+    root = re.match(r"https?://[^/]+", page["url"]).group(0)
+    data = json.loads(request(root + "/PublicPortal/getOpenPublicOpportunitiesSectionData",
+                              timeout=float(page.get("timeout", 45)), retries=1))
+    projects = (data.get("payload") or {}).get("projects") or {}
+    out = []
+    for p in (projects.values() if isinstance(projects, dict) else projects):
+        title = " ".join(x for x in (p.get("ReferenceID"), p.get("ProjectName")) if x).strip()
+        if not title:
             continue
-        seen.add(k)
-        out.append(_opp(page, text[:300], href, desc=text if len(text) > 300 else ""))
+        o = _opp(page, title, f"{root}/opportunities/{p.get('ProjectID')}")
+        o.source_id = f"bonfire-{p.get('ProjectID')}"
+        close = p.get("DateClose") or ""
+        o.due_text = f"{close} UTC" if close else ""
+        try:
+            o.due = date.fromisoformat(close[:10]) if close else None
+        except ValueError:
+            o.due = None
+        out.append(o)
     return out
 
 
