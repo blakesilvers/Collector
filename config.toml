@@ -1,0 +1,85 @@
+# Fish Window Cleaning – Tyler: bid / RFP collector configuration.
+
+sources = ["esbd", "sam", "pages"]
+radius_miles = 120
+output_dir = "reports"
+cache_dir = ".cache"
+database = "data/rfps.sqlite"
+
+[office]
+name = "Fish Window Cleaning – Tyler (5400 University Blvd, Ste 5, Tyler TX 75707)"
+state = "TX"
+# OpenStreetMap geocode of University Blvd, Tyler TX 75707 (within ~1 mile of the suite).
+lat = 32.3144
+lon = -95.2386
+
+[matching]
+# Janitorial/custodial contracts sometimes include window cleaning. Off by
+# default because there are many; turn on here or with --include-related.
+include_related = false
+min_score = 2
+# Extra phrases to treat as a strong match (case-insensitive, literal).
+extra_keywords = []
+# Titles containing any of these are dropped (case-insensitive, literal).
+exclude = []
+
+[sam]
+# Free key: SAM.gov > sign in > Account Details > API Key. The SAM_API_KEY
+# environment variable takes precedence over this value.
+api_key = ""
+posted_within_days = 90
+# NAICS 561720 Janitorial Services (includes window cleaning).
+# NAICS 561790 Other Services to Buildings and Dwellings (includes pressure washing).
+naics = ["561720", "561790"]
+psc = []
+title_keywords = []
+max_pages_per_query = 3
+
+# Buyers whose names don't contain their city, or contain a misleading one
+# ("Stephen F. Austin" is in Nacogdoches, not Austin). Substring match on
+# agency name + title; value is "City, ST" or "lat,lon".
+[agency_locations]
+"Stephen F. Austin" = "Nacogdoches, TX"
+"Stephen F Austin" = "Nacogdoches, TX"
+"East Texas A&M" = "Commerce, TX"
+"Texas A&M University-Commerce" = "Commerce, TX"
+"Texas A&M University - Commerce" = "Commerce, TX"
+"Texas A&M University-Texarkana" = "Texarkana, TX"
+"Texas A&M University - Texarkana" = "Texarkana, TX"
+"Sam Houston State" = "Huntsville, TX"
+"UT Tyler" = "Tyler, TX"
+"University of Texas at Tyler" = "Tyler, TX"
+"UT Health Science Center at Tyler" = "Tyler, TX"
+"UT Health East Texas" = "Tyler, TX"
+"ESC Region 7" = "Kilgore, TX"
+"ESC Region 8" = "Pittsburg, TX"
+"ESC Region 10" = "Richardson, TX"
+"ESC Region 6" = "Huntsville, TX"
+"East Texas Council of Governments" = "Kilgore, TX"
+"Ark-Tex Council of Governments" = "Texarkana, TX"
+"Deep East Texas Council of Governments" = "Jasper, TX"
+"North Central Texas Council of Governments" = "Arlington, TX"
+"Angelina College" = "Lufkin, TX"
+"Panola College" = "Carthage, TX"
+"Northeast Texas Community College" = "Mount Pleasant, TX"
+"Paris Junior College" = "Paris, TX"
+"Trinity Valley Community College" = "Athens, TX"
+"Tyler Junior College" = "Tyler, TX"
+"Kilgore College" = "Kilgore, TX"
+"Rusk State Hospital" = "Rusk, TX"
+"Terrell State Hospital" = "Terrell, TX"
+"Northeast Texas Municipal Water" = "Hughes Springs, TX"
+"Sabine River Authority" = "Orange, TX"
+"Angelina & Neches River Authority" = "Lufkin, TX"
+"Upper Neches River" = "Palestine, TX"
+"Texas Tech University" = "Lubbock, TX"
+"Capitol Complex" = "Austin, TX"
+"State Preservation Board" = "Austin, TX"
+"Teacher Retirement System" = "Austin, TX"
+"San Jacinto College" = "Pasadena, TX"
+"Tyler District" = "Tyler, TX"
+"Atlanta District" = "Atlanta, TX"
+"Lufkin District" = "Lufkin, TX"
+"Paris District" = "Paris, TX"
+
+# Agency bid pages scanned on every run (see README).

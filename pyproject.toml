@@ -1,0 +1,15 @@
+[project]
+name = "rfp-collector"
+version = "1.0.0"
+description = "Find window-cleaning and pressure-washing bids (RFPs/RFQs/IFBs) near an office."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+rfp-collector = "rfp_collector.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["rfp_collector*"]
+
+[tool.setuptools.package-data]
+rfp_collector = ["data/*.csv.gz"]

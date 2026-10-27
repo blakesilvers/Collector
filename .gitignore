@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.cache/
+reports/
+data/rfps.sqlite
+config.local.toml
+.venv/
