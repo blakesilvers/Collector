@@ -111,7 +111,14 @@ def fetch(cfg: dict, cache_dir: Path) -> list[Opportunity]:
 def _to_opp(r: dict) -> Opportunity:
     pop = r.get("placeOfPerformance") or {}
     office = r.get("officeAddress") or {}
+    country = _code(pop.get("country"))
+    domestic = country in ("", "USA", "US") and not ("-" in _code(pop.get("state")))
     city, state, zipc = _name(pop.get("city")), _code(pop.get("state")), pop.get("zip") or ""
+    if city == "0":
+        city = ""
+    if not domestic:
+        # Foreign postal codes (Madrid 28006) collide with U.S. ZIPs; never geocode them.
+        zipc, state = "", ""
     codes = [c for c in (r.get("naicsCode"), r.get("classificationCode")) if c]
     opp = Opportunity(
         source="sam",
@@ -136,7 +143,7 @@ def _to_opp(r: dict) -> Opportunity:
         loc = geo.lookup_place(city, state)
         if loc:
             cands.append(loc)
-    if not cands:
+    if not cands and domestic:
         # Fall back to the contracting office; flagged by its evidence text.
         oz = office.get("zipcode") or office.get("zip")
         loc = geo.lookup_zip(oz)

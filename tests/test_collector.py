@@ -125,6 +125,11 @@ class SourceParsingTests(unittest.TestCase):
         o = sam._to_opp(row)
         self.assertIn("contracting office", o.candidates[0].evidence)
 
+    def test_sam_foreign_zip_not_geocoded(self):
+        row = dict(SAM_ROW, placeOfPerformance={"city": {"code": "Madrid", "name": "Madrid"},
+                   "state": {"code": "ES-MD", "name": "Madrid"}, "zip": "28006", "country": {"code": "ESP", "name": "SPAIN"}})
+        self.assertEqual(sam._to_opp(row).candidates, [])
+
     def test_html_page(self):
         page = {"name": "City of Tyler", "url": "https://example.gov/bids", "location": "Tyler, TX"}
         html = b"""<html><body><nav><a href="/">Home page link</a></nav><table>
