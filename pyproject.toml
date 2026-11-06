@@ -5,11 +5,15 @@ description = "Find window-cleaning and pressure-washing bids (RFPs/RFQs/IFBs) n
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+xbookmarks = ["playwright>=1.40"]
+
 [project.scripts]
 rfp-collector = "rfp_collector.cli:main"
+xbookmarks = "xbookmarks.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["rfp_collector*"]
+include = ["rfp_collector*", "xbookmarks*"]
 
 [tool.setuptools.package-data]
 rfp_collector = ["data/*.csv.gz"]
