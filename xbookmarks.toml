@@ -1,0 +1,20 @@
+# Settings for `python -m xbookmarks`. Copy to xbookmarks.local.toml (git-ignored) to override.
+
+[paths]
+data_dir = "data/xbookmarks"     # SQLite store + saved browser profile (keep private)
+reports_dir = "reports"
+
+[browser]
+headless = true                  # false = watch it work (same as --headed)
+channel = ""                     # "chrome" or "msedge" to use the installed browser instead of Playwright's Chromium
+executable_path = ""             # full path to a Chromium binary, if needed
+max_items = 400                  # per incremental run; `run --all` ignores this
+keep_raw = true                  # also store X's full JSON for each post
+
+[email]
+enabled = false                  # true = email each day's report to yourself
+smtp_host = "smtp.gmail.com"
+smtp_port = 465
+username = "you@gmail.com"       # Gmail address; password comes from env XBOOKMARKS_SMTP_PASSWORD (an App Password)
+to = "you@gmail.com"
+send_when_empty = false          # also email on days with nothing new

@@ -111,3 +111,70 @@ Each run updates `data/rfps.sqlite`, so the report marks only first-time bids as
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+---
+
+# X bookmarks collector
+
+`python -m xbookmarks` collects the posts you bookmark on X (Twitter) and writes a daily
+report of the ones it has not seen before. It costs nothing: it does not use the X API
+(which no longer has a free tier). Instead a real browser, logged in as you, opens
+`x.com/i/bookmarks` and the data X's own page loads is captured. That is the same route
+the free bookmark-export browser extensions take. X's terms of service frown on automated
+access, so keep it to one gentle run a day on your own account.
+
+Because the page makes the requests, nothing here depends on X's internal query IDs,
+feature flags or request-signing headers, which change often.
+
+## Setup (once)
+
+```bash
+pip install playwright
+playwright install chromium
+python -m xbookmarks login       # a browser window opens; log in to X; it closes itself
+```
+
+The session is saved in `data/xbookmarks/profile/` (git-ignored, treat it like a password).
+To use your installed Chrome or Edge instead of Playwright's Chromium, set
+`channel = "chrome"` (or `"msedge"`) under `[browser]` in `xbookmarks.toml`.
+
+## Every day
+
+```bash
+python -m xbookmarks                 # fetch new bookmarks, store them, write today's report
+python -m xbookmarks run --all       # once: walk your whole bookmark history
+python -m xbookmarks report --days 7 # rebuild a report for the last week, no browser
+python -m xbookmarks search "topic"  # grep the store
+python -m xbookmarks export          # everything as JSON
+```
+
+Reports land in `reports/bookmarks_YYYY-MM-DD.{md,html,json}`. Each run stops once it
+reaches posts already stored, so a daily run only loads a page or two. The store is
+`data/xbookmarks/bookmarks.sqlite` and keeps the full text, links, media, quoted post,
+engagement counts and (by default) X's raw JSON for every bookmark.
+
+Scheduling on Windows (runs headless at 05:30; the window never shows):
+
+```powershell
+.\scripts\install_xbookmarks_task.ps1 -At 05:30
+```
+
+macOS/Linux cron: `30 5 * * * cd /path/to/Collector && python3 -m xbookmarks`
+
+## Emailing the report to yourself (optional, needed for the morning digest)
+
+Set `enabled = true`, `username` and `to` under `[email]` in `xbookmarks.toml` (or a
+git-ignored `xbookmarks.local.toml`). For Gmail, create an App Password at
+myaccount.google.com/apppasswords (2-Step Verification must be on) and put it in the
+`XBOOKMARKS_SMTP_PASSWORD` environment variable. Each day with new bookmarks you then get
+an email titled `X bookmarks report YYYY-MM-DD (N new)` with the report in the body and the
+JSON attached. An assistant with access to that mailbox can turn it into a morning digest.
+
+## Troubleshooting
+
+* **"No X session"** or **"X redirected to its login page"**: run `python -m xbookmarks login` again.
+* **"loaded no bookmark data in time"**: run `python -m xbookmarks run --headed` to watch
+  what X shows. If X is presenting a challenge page to the headless browser, set
+  `headless = false` or `channel = "chrome"` in the config.
+* `data/xbookmarks/last_request.json` records the query ID and parameters X's page used in
+  the last run, which helps when diagnosing a change on X's side.
