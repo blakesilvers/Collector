@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from . import compose, extract, illustrate, imagegen, transcribe, video
+from . import compose, extract, illustrate, imagegen, transcribe, verses, video
 from .config import Config
 from .models import ArtCandidate, Manifest, load_brief
 
@@ -128,6 +128,33 @@ def stage_compose(cfg: Config, m: Manifest, provider: imagegen.ImageProvider | N
                 m.cards[f"quote{qi}_{name}"] = str(out)
 
 
+def ensure_plan(cfg: Config, m: Manifest, segments=None) -> tuple[list, list]:
+    """Segments and scripture readings for this program, planned once by Gemini from the audio and cached as editable JSON."""
+    pdir = program_dir(cfg, m.stem) / "illustrated"
+    plan_path, verses_path = pdir / "segments.json", pdir / "verses.json"
+    if segments is not None:
+        scriptures = illustrate.read_scriptures(verses_path) if verses_path.exists() else []
+        return segments, scriptures
+    if plan_path.exists() and verses_path.exists():
+        return illustrate.read_plan(plan_path), illustrate.read_scriptures(verses_path)
+    if not m.audio or not m.transcript:
+        raise RuntimeError("planning needs the audio file and a transcript")
+    segs, scriptures = illustrate.plan_segments(cfg, Path(m.audio), Path(m.transcript).read_text(encoding="utf-8"))
+    illustrate.write_plan(segs, plan_path)
+    illustrate.write_srt(segs, pdir / "segments.srt")
+    illustrate.write_scriptures(scriptures, verses_path)
+    m.verses = str(verses_path)
+    return segs, scriptures
+
+
+def verse_overlays(cfg: Config, m: Manifest, scriptures: list, position: str = "bottom", width: int = 1920, height: int = 1080) -> list[verses.Overlay]:
+    if not cfg.verses.enabled or not scriptures:
+        return []
+    fonts = compose.Fonts.resolve(cfg.compose.font_serif, cfg.compose.font_sans)
+    return verses.build_overlays(scriptures, program_dir(cfg, m.stem) / "illustrated" / f"verse_overlays_{position}", width, height, fonts,
+                                 cfg.verses.max_words, cfg.verses.min_page_seconds, position)
+
+
 def stage_video(cfg: Config, m: Manifest) -> None:
     if not cfg.video.enabled:
         return
@@ -137,8 +164,12 @@ def stage_video(cfg: Config, m: Manifest) -> None:
     if not frame:
         raise RuntimeError("youtube_frame missing; include 'youtube' in compose.formats")
     captions = Path(m.captions) if (cfg.video.burn_captions and m.captions) else None
+    overlays = []
+    if cfg.video.show_verses and cfg.verses.enabled:
+        _, scriptures = ensure_plan(cfg, m)
+        overlays = verse_overlays(cfg, m, scriptures, position="top")  # the title frame's text lives at the bottom
     out = program_dir(cfg, m.stem) / f"{m.stem}.mp4"
-    m.video = str(video.render_video(Path(frame), Path(m.audio), out, captions))
+    m.video = str(video.render_video(Path(frame), Path(m.audio), out, captions, overlays=overlays))
 
 
 def stage_illustrate(cfg: Config, m: Manifest, provider: imagegen.ImageProvider | None = None, segments=None) -> None:
@@ -148,14 +179,7 @@ def stage_illustrate(cfg: Config, m: Manifest, provider: imagegen.ImageProvider 
     if not m.transcript:
         raise RuntimeError("no transcript; run the transcript stage first")
     pdir = program_dir(cfg, m.stem) / "illustrated"
-    plan_path = pdir / "segments.json"
-    if segments is None:
-        if plan_path.exists():
-            segments = illustrate.read_plan(plan_path)
-        else:
-            segments = illustrate.plan_segments(cfg, Path(m.audio), Path(m.transcript).read_text(encoding="utf-8"))
-            illustrate.write_plan(segments, plan_path)
-            illustrate.write_srt(segments, pdir / "segments.srt")
+    segments, scriptures = ensure_plan(cfg, m, segments)
     sketches = illustrate.draw_segments(cfg, segments, pdir / "sketches", provider)
     frames = [(p, seg.end - seg.start) for p, seg in zip(sketches, segments)]
     title = m.cards.get("youtube_frame")
@@ -163,7 +187,8 @@ def stage_illustrate(cfg: Config, m: Manifest, provider: imagegen.ImageProvider 
         frames.insert(0, (Path(title), cfg.illustrate.title_seconds))
         frames[1] = (frames[1][0], max(frames[1][1] - cfg.illustrate.title_seconds, 1.0))  # keep sync with audio
     out = pdir / f"{m.stem}_illustrated.mp4"
-    m.illustrated = str(illustrate.assemble(frames, Path(m.audio), out, cfg.illustrate.fps, cfg.illustrate.crossfade, cfg.illustrate.push_in))
+    overlays = verse_overlays(cfg, m, scriptures)
+    m.illustrated = str(illustrate.assemble(frames, Path(m.audio), out, cfg.illustrate.fps, cfg.illustrate.crossfade, cfg.illustrate.push_in, overlays))
     m.sketches = [str(p) for p in sketches]
 
 

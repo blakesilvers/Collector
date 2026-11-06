@@ -302,7 +302,13 @@ def test_illustrate_stage_offline(workspace: Path, monkeypatch):
     ]
     cfg.illustrate.title_seconds = 0
     cfg.illustrate.crossfade = 0.4
+    from sermon_visuals.illustrate import write_scriptures
+    from sermon_visuals.verses import Scripture
+    write_scriptures([Scripture(start=1.0, end=4.0, reference="Luke 2:10", version="AKJV",
+                                text="Fear not: for, behold, I bring you good tidings of great joy, which shall be to all people.")],
+                     workspace / "output" / "btw-0001" / "illustrated" / "verses.json")
     pipeline.stage_illustrate(cfg, m, provider=provider, segments=segments)
+    assert (workspace / "output" / "btw-0001" / "illustrated" / "verse_overlays_bottom" / "verse_001_1.png").exists()
     assert len(m.sketches) == 2 and all(Path(p).exists() for p in m.sketches)
     assert "ink marker sketch" in provider.calls[0] and "a lamp on a table" in provider.calls[0]
     out = Path(m.illustrated)
@@ -310,3 +316,41 @@ def test_illustrate_stage_offline(workspace: Path, monkeypatch):
     dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(out)],
                                capture_output=True, text=True, check=True).stdout.strip())
     assert 5.0 <= dur <= 6.5
+
+
+def test_paginate_and_validate_scriptures():
+    from sermon_visuals.verses import Scripture, paginate, validate_scriptures
+    text = " ".join(f"word{i}." for i in range(1, 121))  # 120 one-word sentences
+    pages = paginate(text, 55)
+    assert len(pages) == 3 and all(len(p.split()) <= 55 for p in pages)
+    assert paginate("short passage", 55) == ["short passage"]
+    items = [
+        Scripture(start=10, end=20, reference="John 1:1", text="In the beginning was the Word"),
+        Scripture(start=15, end=25, reference="John 1:2", text="The same was in the beginning with God"),
+        Scripture(start=30, end=30.5, reference="x", text="too short"),
+        Scripture(start=40, end=50, reference="", text="no reference"),
+    ]
+    fixed = validate_scriptures(items, duration=45.0)
+    assert [(s.reference, s.start, s.end) for s in fixed] == [("John 1:1", 10.0, 20.0), ("John 1:2", 20.0, 25.0)]
+
+
+def test_verse_overlay_render_and_filter(tmp_path: Path):
+    from sermon_visuals.verses import Overlay, Scripture, build_overlays, overlay_filter
+    fonts = compose.Fonts.resolve()
+    long_text = " ".join(["And the angel said unto them, Fear not."] * 20)  # ~160 words -> pages
+    ovs = build_overlays([Scripture(start=10, end=22, reference="Luke 2:10", text=long_text)], tmp_path, 1920, 1080, fonts, 55, 4.0)
+    assert len(ovs) == 3 and ovs[0].start == 10 and abs(ovs[-1].end - 22) < 1e-6
+    # A short window never drops words: pages get denser, then faster.
+    short = build_overlays([Scripture(start=0, end=6, reference="Luke 2:10", text=long_text)], tmp_path / "short", 1920, 1080, fonts, 55, 4.0)
+    shown = " ".join(p for p in [Path(o.png).name for o in short])
+    assert len(short) >= 2 and abs(short[-1].end - 6) < 1e-6
+    top = build_overlays([Scripture(start=0, end=6, reference="John 1:1", text="In the beginning was the Word")], tmp_path / "top", 1920, 1080, fonts, position="top")
+    with Image.open(top[0].png) as im:
+        assert im.getpixel((960, 60))[3] > 0 and im.getpixel((960, 1000))[3] == 0  # band at the top, not the bottom
+    with Image.open(ovs[0].png) as im:
+        assert im.size == (1920, 1080) and im.mode == "RGBA"
+    inputs, flt, last = overlay_filter("v9", 4, ovs)
+    assert inputs.count("-i") == 3 and last == "vo2" and "between(t,10.000,14.000)" in flt
+    assert overlay_filter("v9", 4, []) == ([], "", "v9")
+    cmd = video.build_command(tmp_path / "f.png", tmp_path / "a.mp3", tmp_path / "o.mp4", overlays=ovs)
+    assert "-filter_complex" in cmd and cmd[cmd.index("-map") + 1] == "[vo2]"

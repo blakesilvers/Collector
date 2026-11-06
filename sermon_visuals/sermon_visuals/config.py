@@ -70,6 +70,14 @@ class Compose:
 class Video:
     enabled: bool = True
     burn_captions: bool = True
+    show_verses: bool = True
+
+
+@dataclass
+class Verses:
+    enabled: bool = True
+    max_words: int = 55
+    min_page_seconds: float = 4.0
 
 
 @dataclass
@@ -99,6 +107,7 @@ class Config:
     images: Images
     compose: Compose
     video: Video
+    verses: Verses
     illustrate: Illustrate
 
 
@@ -157,6 +166,8 @@ def load_config(path: str | os.PathLike = "config.toml") -> Config:
     compose = Compose(**{k: c[k] for k in Compose.__dataclass_fields__ if k in c})
     v = raw.get("video", {})
     video = Video(**{k: v[k] for k in Video.__dataclass_fields__ if k in v})
+    ve = raw.get("verses", {})
+    verses = Verses(**{k: ve[k] for k in Verses.__dataclass_fields__ if k in ve})
     il = raw.get("illustrate", {})
     il_refs = [paths.assets_dir / r for r in il.get("reference_images", [])]
     missing = [str(r) for r in il_refs if not r.exists()]
@@ -176,4 +187,4 @@ def load_config(path: str | os.PathLike = "config.toml") -> Config:
     if bad:
         raise ValueError(f"compose.formats has unknown entries: {bad}")
 
-    return Config(paths, ministry, style, extract, transcribe, images, compose, video, illustrate)
+    return Config(paths, ministry, style, extract, transcribe, images, compose, video, verses, illustrate)

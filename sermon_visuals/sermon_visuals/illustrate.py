@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from .config import Config
 from .imagegen import ImageProvider, make_provider
+from .verses import Overlay, Scripture, overlay_filter, validate_scriptures
 from .video import ffmpeg_available
 
 log = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ class Segment(BaseModel):
 
 class SegmentPlan(BaseModel):
     segments: list[Segment]
+    scriptures: list[Scripture] = Field(default_factory=list)
 
 
 SEGMENT_PROMPT = """You are planning illustrations for a narrated program, in the manner of a whiteboard illustrator
@@ -44,6 +46,13 @@ For each segment give the gist and one illustration: a concrete, drawable scene 
 point being made. Prefer objects, places, hands, scrolls, lamps, roads, buildings and symbolic
 compositions. No text, lettering, numbers or logos in the scene. Do not depict the narrator.
 {guardrails}
+
+Separately, list every scripture passage the narrator reads or quotes aloud, as "scriptures": the
+reference, the translation label if the transcript gives one, the words exactly as read aloud (verse
+numbers omitted), and the seconds at which the reading starts and ends, from the audio. Include
+passages he reads from the transcript's scripture blocks and verses he quotes from memory. Do not
+include passages he merely mentions by reference without reading. If he reads a passage in parts
+with commentary between, list each part separately.
 
 <transcript>
 {transcript}
@@ -75,7 +84,7 @@ def validate_segments(segments: list[Segment], duration: float, minimum: float =
     return [s for s in fixed if s.end > s.start]
 
 
-def plan_segments(cfg: Config, audio: Path, transcript: str) -> list[Segment]:
+def plan_segments(cfg: Config, audio: Path, transcript: str) -> tuple[list[Segment], list[Scripture]]:
     from google import genai
     from google.genai import types
 
@@ -108,7 +117,8 @@ def plan_segments(cfg: Config, audio: Path, transcript: str) -> list[Segment]:
         except Exception:
             pass
     plan = SegmentPlan.model_validate_json(response.text or "{}")
-    return validate_segments(plan.segments, audio_duration(audio), cfg.illustrate.min_seconds)
+    duration = audio_duration(audio)
+    return validate_segments(plan.segments, duration, cfg.illustrate.min_seconds), validate_scriptures(plan.scriptures, duration)
 
 
 def sketch_prompt(cfg: Config, scene: str) -> str:
@@ -142,6 +152,7 @@ def build_assembly_command(
     width: int = 1920,
     height: int = 1080,
     push_in: bool = True,
+    overlays: list[Overlay] | None = None,
 ) -> list[str]:
     """ffmpeg command: each still shown for its duration with a slow push-in, dissolving into the next."""
     if not frames:
@@ -167,6 +178,10 @@ def build_assembly_command(
             parts.append(f"[{prev}][v{i}]xfade=transition=fade:duration={fade}:offset={offset:.3f}[{label}]")
             prev = label
         last = prev
+    ov_inputs, ov_filter, last = overlay_filter(last, len(frames) + 1, overlays or [])
+    cmd += ov_inputs
+    if ov_filter:
+        parts.append(ov_filter)
     cmd += [
         "-filter_complex", ";".join(parts),
         "-map", f"[{last}]", "-map", f"{len(frames)}:a",
@@ -176,12 +191,12 @@ def build_assembly_command(
     return cmd
 
 
-def assemble(frames: list[tuple[Path, float]], audio: Path, out: Path, fps: int, fade: float, push_in: bool) -> Path:
+def assemble(frames: list[tuple[Path, float]], audio: Path, out: Path, fps: int, fade: float, push_in: bool, overlays: list[Overlay] | None = None) -> Path:
     if not ffmpeg_available():
         raise RuntimeError("ffmpeg is not installed or not on PATH.")
     out.parent.mkdir(parents=True, exist_ok=True)
-    log.info("Assembling %d illustrations into %s", len(frames), out.name)
-    subprocess.run(build_assembly_command(frames, audio, out, fps=fps, fade=fade, push_in=push_in), check=True)
+    log.info("Assembling %d illustrations (%d verse overlays) into %s", len(frames), len(overlays or []), out.name)
+    subprocess.run(build_assembly_command(frames, audio, out, fps=fps, fade=fade, push_in=push_in, overlays=overlays), check=True)
     return out
 
 
@@ -192,6 +207,15 @@ def write_plan(segments: list[Segment], path: Path) -> None:
 
 def read_plan(path: Path) -> list[Segment]:
     return [Segment.model_validate(d) for d in json.loads(path.read_text(encoding="utf-8"))]
+
+
+def write_scriptures(items: list[Scripture], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([s.model_dump() for s in items], indent=2), encoding="utf-8")
+
+
+def read_scriptures(path: Path) -> list[Scripture]:
+    return [Scripture.model_validate(d) for d in json.loads(path.read_text(encoding="utf-8"))]
 
 
 def write_srt(segments: list[Segment], path: Path) -> None:

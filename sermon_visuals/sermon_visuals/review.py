@@ -65,6 +65,11 @@ def build_review(output_dir: Path, manifests: list[Manifest]) -> Path:
             parts.append("</div>")
         if m.video:
             parts.append(f"<p><a href='{html.escape(_rel(m.video, output_dir))}'>video</a></p>")
+        if m.verses and Path(m.verses).exists():
+            items = json.loads(Path(m.verses).read_text(encoding="utf-8"))
+            parts.append(f"<h3>Scripture on screen ({len(items)})</h3><p class=meta>Timings and words heard by Gemini; correct <code>{html.escape(_rel(m.verses, output_dir))}</code> and re-run the video stages with --force.</p>")
+            for v in items:
+                parts.append(f"<blockquote><b>{html.escape(v['reference'])}</b> {html.escape(v.get('version',''))} · {v['start']:.0f}s to {v['end']:.0f}s<br>{html.escape(v['text'])}</blockquote>")
         if m.sketches:
             parts.append(f"<h3>Illustrated version ({len(m.sketches)} sketches)</h3><div class=grid>")
             for i, p in enumerate(m.sketches, start=1):

@@ -150,6 +150,13 @@ and re-run to redraw it, edit a scene description and delete its sketch to chang
 (the gists as captions, useful to check sync in a player), `sketches/`, and the MP4. A half-hour
 program is about 30 sketches, roughly $2, and a few minutes of rendering.
 
+**Scripture on screen.** In both videos, whenever the speaker reads a passage aloud, its reference
+and the words appear in a band for the length of the reading (long passages page through). Gemini
+hears the timings and words from the audio and saves them to `output/<stem>/illustrated/verses.json`;
+the review page lists them so they can be checked, and the file can be corrected and the video
+re-rendered with `--stages video --force` (or `illustrate --force`). Turn off with
+`verses.enabled = false`, or for the still-frame video alone with `video.show_verses = false`.
+
 What this is not: a single continuous canvas with a visible drawing hand. That remains an
 illustrator's job. A stroke-by-stroke draw-on reveal of each sketch is the natural next step.
 

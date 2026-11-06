@@ -58,6 +58,15 @@ font_sans = "auto"
 [video]
 enabled = true
 burn_captions = true        # uses <stem>.srt if present
+show_verses = true          # scripture the speaker reads aloud appears on screen while he reads it (needs GEMINI_API_KEY)
+
+[verses]
+# The rule: whenever the speaker reads scripture aloud, the reference and the words appear in a lower
+# band for the length of the reading. Timings and words come from Gemini listening to the audio and are
+# saved to output/<stem>/illustrated/verses.json, which you can correct and re-render.
+enabled = true
+max_words = 55              # longer passages page through, one page per few seconds
+min_page_seconds = 4
 
 [illustrate]
 # `python -m sermon_visuals illustrate --only <stem>`: an illustrated-narration video in the manner of a

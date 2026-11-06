@@ -67,6 +67,7 @@ class Manifest(BaseModel):
     video: str | None = None
     illustrated: str | None = None
     sketches: list[str] = Field(default_factory=list)
+    verses: str | None = None
     done: list[str] = Field(default_factory=list)
     errors: dict[str, str] = Field(default_factory=dict)
 
