@@ -1,2 +1,0 @@
-[console_scripts]
-sermon-visuals = sermon_visuals.cli:main

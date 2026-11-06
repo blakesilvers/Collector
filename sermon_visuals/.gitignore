@@ -5,3 +5,5 @@ assets/
 __pycache__/
 .pytest_cache/
 .env
+build/
+*.egg-info/
