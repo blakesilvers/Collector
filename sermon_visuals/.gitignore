@@ -1,0 +1,6 @@
+config.toml
+programs/
+output/
+assets/
+__pycache__/
+.pytest_cache/
