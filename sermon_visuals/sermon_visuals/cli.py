@@ -8,7 +8,7 @@ import sys
 from importlib import resources
 from pathlib import Path
 
-from . import env, pipeline, review
+from . import env, pipeline, review, update
 from .config import load_config
 
 
@@ -89,6 +89,10 @@ def cmd_illustrate(args) -> int:
     return cmd_run(args)
 
 
+def cmd_update(args) -> int:
+    return update.run_update(reinstall=not args.no_install)
+
+
 def cmd_review(args) -> int:
     cfg = load_config(args.config)
     page = review.build_review(cfg.paths.output_dir, [pipeline.load_manifest(cfg, s) for s in pipeline.discover_stems(cfg)])
@@ -129,6 +133,9 @@ def build_parser() -> argparse.ArgumentParser:
     il.add_argument("--only", nargs="*", metavar="STEM")
     il.add_argument("--force", action="store_true", help="re-plan and re-draw even if already done")
     il.set_defaults(fn=cmd_illustrate)
+    up = sub.add_parser("update", help="download the latest code from GitHub and replace it in place (keeps config, keys, programs, output)")
+    up.add_argument("--no-install", action="store_true", help="skip pip install after updating")
+    up.set_defaults(fn=cmd_update)
     sub.add_parser("review", help="rebuild output/review.html").set_defaults(fn=cmd_review)
     c = sub.add_parser("choose", help="pick which artwork a program's cards use")
     c.add_argument("stem")

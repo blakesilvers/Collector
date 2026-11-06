@@ -354,3 +354,29 @@ def test_verse_overlay_render_and_filter(tmp_path: Path):
     assert overlay_filter("v9", 4, []) == ([], "", "v9")
     cmd = video.build_command(tmp_path / "f.png", tmp_path / "a.mp3", tmp_path / "o.mp4", overlays=ovs)
     assert "-filter_complex" in cmd and cmd[cmd.index("-map") + 1] == "[vo2]"
+
+
+def test_update_applies_zip_without_touching_user_files(tmp_path: Path):
+    import io, zipfile
+    from sermon_visuals import update
+    root = tmp_path / "install"
+    (root / "sermon_visuals").mkdir(parents=True)
+    (root / "sermon_visuals" / "old.py").write_text("old")
+    (root / "config.toml").write_text("mine")
+    (root / ".env").write_text("secret")
+    (root / "programs").mkdir(); (root / "programs" / "a.mp3").write_bytes(b"x")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("Collector-branch/README.md", "repo readme")
+        zf.writestr("Collector-branch/sermon_visuals/pyproject.toml", "[project]\nname='x'")
+        zf.writestr("Collector-branch/sermon_visuals/README.md", "new readme")
+        zf.writestr("Collector-branch/sermon_visuals/sermon_visuals/__init__.py", "new")
+        zf.writestr("Collector-branch/sermon_visuals/sermon_visuals/config.example.toml", "example")
+        zf.writestr("Collector-branch/sermon_visuals/tests/test_x.py", "pass")
+    replaced = update.apply_zip(buf.getvalue(), root)
+    assert set(replaced) == {"sermon_visuals", "tests", "pyproject.toml", "README.md"}
+    assert not (root / "sermon_visuals" / "old.py").exists()
+    assert (root / "sermon_visuals" / "__init__.py").read_text() == "new"
+    assert (root / "README.md").read_text() == "new readme"
+    assert (root / "config.toml").read_text() == "mine" and (root / ".env").read_text() == "secret"
+    assert (root / "programs" / "a.mp3").exists()

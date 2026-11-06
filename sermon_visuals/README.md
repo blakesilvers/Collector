@@ -85,6 +85,16 @@ On Windows, if `python` is not found, try `py` in place of `python`. If `pip` is
 Everything is idempotent. A `manifest.json` in each program folder records what is done; re-running
 skips finished stages, and `--force` redoes them.
 
+## Updating
+
+```bash
+python -m sermon_visuals update
+```
+
+Downloads the current code from GitHub and replaces it in place, then installs any new
+dependencies. `config.toml`, `.env`, `programs/`, `assets/` and `output/` are left alone. New
+settings show up in `sermon_visuals/config.example.toml`; copy the ones you want into `config.toml`.
+
 ## Configuration
 
 `config.toml` holds the program name, speaker, house-style prompt, the `avoid` list and
