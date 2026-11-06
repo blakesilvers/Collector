@@ -25,12 +25,31 @@ def find_sidecar(input_dir: Path, stem: str, ext: str) -> Path | None:
     return p if p.exists() else None
 
 
+def pdf_text(pdf: Path) -> str:
+    """Plain text from a PDF transcript (e.g. the ministry's edited program transcripts)."""
+    from pypdf import PdfReader
+
+    pages = [(page.extract_text() or "") for page in PdfReader(str(pdf)).pages]
+    text = "\n".join(pages).replace("\u00ad", "")  # soft hyphens from justified layouts
+    lines = [" ".join(line.split()) for line in text.splitlines()]
+    return "\n".join(lines).strip()
+
+
 def get_transcript(cfg: Config, stem: str, audio: Path | None, out_dir: Path) -> Path:
-    """Return a path to a plain-text transcript, creating it from audio if allowed."""
+    """Return a path to a plain-text transcript: sidecar .txt, else sidecar .pdf, else cached, else transcribe."""
     existing = find_sidecar(cfg.paths.input_dir, stem, ".txt")
     if existing:
         return existing
     cached = out_dir / "transcript.txt"
+    pdf = find_sidecar(cfg.paths.input_dir, stem, ".pdf")
+    if pdf and (not cached.exists() or cached.stat().st_mtime < pdf.stat().st_mtime):
+        log.info("Reading transcript from %s", pdf.name)
+        text = pdf_text(pdf)
+        if not text:
+            raise RuntimeError(f"{pdf.name} has no extractable text (scanned image?). Save the transcript as {stem}.txt instead.")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        cached.write_text(text + "\n", encoding="utf-8")
+        return cached
     if cached.exists():
         return cached
     if cfg.transcribe.provider == "none":

@@ -219,3 +219,37 @@ def test_init_and_doctor(tmp_path: Path, monkeypatch, capsys):
     assert main(["doctor"]) == 1
     out = capsys.readouterr().out
     assert "FIX  ANTHROPIC_API_KEY" in out and "0 program(s)" in out
+
+
+def minimal_pdf(text: str) -> bytes:
+    """A one-page PDF with a real xref table, so pypdf can read it."""
+    stream = f"BT /F1 18 Tf 20 100 Td ({text}) Tj ET".encode()
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 144] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, obj in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n".encode() + obj + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode()
+    for off in offsets:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    return bytes(out)
+
+
+def test_pdf_transcript_is_used(workspace: Path, monkeypatch):
+    from sermon_visuals import transcribe
+    (workspace / "programs" / "btw-0001.txt").unlink()
+    (workspace / "programs" / "btw-0001.pdf").write_bytes(minimal_pdf("Blessed are the poor in spirit."))
+    cfg = load_config(workspace / "config.toml")
+    assert env.needs_transcription(cfg, ["btw-0001"]) is False
+    path = transcribe.get_transcript(cfg, "btw-0001", None, workspace / "output" / "btw-0001")
+    assert path.read_text(encoding="utf-8").strip() == "Blessed are the poor in spirit."
+    assert "btw-0001" in pipeline.discover_stems(cfg)

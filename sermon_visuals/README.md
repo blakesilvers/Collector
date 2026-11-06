@@ -55,7 +55,7 @@ python -m sermon_visuals init
 - `GEMINI_API_KEY` from https://aistudio.google.com/apikey (the paintings)
 - `OPENAI_API_KEY` only if you switch `images.provider` or `transcribe.provider` to `openai`
 
-Put one MP3 in `programs/` (and its transcript as a `.txt` with the same name, if you have one). Then:
+Put one MP3 in `programs/` and, if you have one, its transcript as a `.txt` or `.pdf` with the same name (the ministry's edited program transcripts work as-is). Then:
 
 ```bash
 python -m sermon_visuals doctor
@@ -76,7 +76,7 @@ On Windows, if `python` is not found, try `py` in place of `python`. If `pip` is
 
 | Stage | What happens | Service |
 |---|---|---|
-| `transcript` | Uses `<stem>.txt` next to the audio if present, else transcribes | Gemini (default) or OpenAI |
+| `transcript` | Uses `<stem>.txt` or `<stem>.pdf` next to the audio if present, else transcribes | Gemini (default) or OpenAI |
 | `brief` | Transcript -> title, summary, scripture refs, pull quotes, two image concepts, thumbnail hook, review flags | Claude (structured output) |
 | `images` | Each concept -> N candidate paintings in 16:9, house style + optional reference images | Gemini (Nano Banana) or OpenAI Images |
 | `compose` | Chosen art + text -> YouTube frame, thumbnail, square and vertical quote cards | Pillow |
@@ -100,7 +100,7 @@ so the tool also works in CI or on a server without the file.
 ```bash
 # drop audio (and transcripts / captions if you have them) into programs/
 #   programs/btw-2024-03-11.mp3
-#   programs/btw-2024-03-11.txt   (optional, skips transcription)
+#   programs/btw-2024-03-11.txt   (optional, skips transcription; a .pdf works too)
 #   programs/btw-2024-03-11.srt   (optional, burned into the video)
 
 python -m sermon_visuals run                      # all programs, all stages

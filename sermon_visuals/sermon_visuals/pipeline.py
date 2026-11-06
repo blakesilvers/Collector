@@ -17,7 +17,7 @@ STAGES = ["transcript", "brief", "images", "compose", "video"]
 def discover_stems(cfg: Config) -> list[str]:
     stems = set()
     for p in cfg.paths.input_dir.iterdir() if cfg.paths.input_dir.exists() else []:
-        if p.suffix.lower() in transcribe.AUDIO_EXTS or p.suffix.lower() == ".txt":
+        if p.suffix.lower() in transcribe.AUDIO_EXTS or p.suffix.lower() in (".txt", ".pdf"):
             stems.add(p.stem)
     return sorted(stems)
 

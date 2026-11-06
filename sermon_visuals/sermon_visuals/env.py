@@ -42,7 +42,7 @@ def load_dotenv(path: Path) -> list[str]:
 def needs_transcription(cfg: Config, stems: list[str]) -> bool:
     """True if any program has neither a sidecar .txt nor a transcript already produced."""
     for stem in stems:
-        if (cfg.paths.input_dir / f"{stem}.txt").exists() or (cfg.paths.output_dir / stem / "transcript.txt").exists():
+        if any((cfg.paths.input_dir / f"{stem}{ext}").exists() for ext in (".txt", ".pdf")) or (cfg.paths.output_dir / stem / "transcript.txt").exists():
             continue
         return True
     return False

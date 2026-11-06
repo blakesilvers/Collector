@@ -6,6 +6,10 @@ Rules that matter more than anything else:
 1. Pull quotes must be the speaker's exact words, copied verbatim from the transcript, with no
    paraphrase, no added words and no trimmed words inside the quote. Pick lines that stand alone
    without context, 8 to 30 words each, that a listener would want to share.
+   The transcript may be an edited edition that also contains quoted scripture passages (often
+   labelled with a book, chapter and version such as AKJV), quotations from other authors, and
+   editorial notes in [square brackets]. None of those are the speaker's words: never use a
+   scripture passage, a quotation from someone else, or a bracketed note as a pull quote.
 2. Give scripture references only (book chapter:verse). Do not write out verse text; the ministry
    inserts verse text from its own licensed Bible.
 3. Image prompts describe a scene, mood, composition and light for an illustrator. They never
