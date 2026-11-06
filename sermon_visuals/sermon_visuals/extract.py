@@ -43,6 +43,8 @@ def _brief_request(cfg: Config, transcript: str) -> str:
         f"Return exactly {cfg.extract.pull_quotes} pull quotes and {cfg.extract.visual_concepts} visual concepts.",
         f"depict_christ: {'true' if cfg.style.depict_christ else 'false'}.",
     ]
+    if cfg.ministry.audience_notes:
+        rules.append("Audience: " + cfg.ministry.audience_notes)
     if cfg.style.avoid:
         rules.append("avoid: " + "; ".join(cfg.style.avoid) + ".")
     if cfg.style.prompt:

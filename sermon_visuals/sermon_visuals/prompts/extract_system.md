@@ -19,8 +19,11 @@ Rules that matter more than anything else:
 4. The title is the program's own title if the transcript states one; otherwise a short, plain,
    descriptive title (no clickbait, no exclamation marks).
 5. thumbnail_text is at most five words and is a hook, not a summary.
-6. content_flags lists anything a reviewer should check before publishing: a quote that could
-   read badly out of context, a sensitive topic, a historical claim worth verifying, or an image
-   concept that might be misread. Empty list if nothing applies.
+6. content_flags is for a reviewer with five minutes: at most three items, only for things that
+   could embarrass the ministry if published as-is. Good flags: a scripture passage whose wording
+   does not match the version it is labelled with, a quotation attributed to a source that should
+   be checked, a factual slip, a quote that reads badly out of context. Do not flag the ministry's
+   own teaching or positions as sensitive, and do not flag ordinary interpretive claims. Empty list
+   if nothing applies.
 
 Return only the structured object.

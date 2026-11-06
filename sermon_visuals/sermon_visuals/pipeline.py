@@ -76,7 +76,20 @@ def stage_images(cfg: Config, m: Manifest, provider: imagegen.ImageProvider | No
         m.chosen_art = m.art[0].path
 
 
-def stage_compose(cfg: Config, m: Manifest) -> None:
+def art_for_format(cfg: Config, m: Manifest, fmt: compose.Format, provider: imagegen.ImageProvider | None = None) -> Path:
+    """The chosen painting, re-framed for this format by the image model (cached), or the original if recompose is off."""
+    chosen = Path(m.chosen_art)
+    if fmt.aspect == compose.FORMATS["youtube"].aspect or not cfg.images.recompose:
+        return chosen
+    out = chosen.with_name(f"{chosen.stem}_{fmt.name}.png")
+    if not out.exists():
+        provider = provider or imagegen.make_provider(cfg)
+        log.info("%s: re-framing %s for %s", m.stem, chosen.name, fmt.name)
+        out.write_bytes(provider.generate(imagegen.recompose_prompt(cfg, fmt.aspect), fmt.aspect, [chosen]))
+    return out
+
+
+def stage_compose(cfg: Config, m: Manifest, provider: imagegen.ImageProvider | None = None) -> None:
     if not m.chosen_art:
         raise RuntimeError("no artwork chosen; run the images stage or `choose` first")
     brief = load_brief(Path(m.brief))
@@ -102,12 +115,13 @@ def stage_compose(cfg: Config, m: Manifest) -> None:
             )
             m.cards["thumbnail"] = str(thumb)
         else:
+            fmt_art = art_for_format(cfg, m, fmt, provider)
             for qi, q in enumerate(brief.pull_quotes, start=1):
                 check = next((c for c in m.quote_checks if c.text == q.text), None)
                 if check and not check.verified:
                     continue  # never put an unverified quote on a card
                 out = compose.render_quote_card(
-                    art, cards_dir / f"quote{qi}_{name}.png", fmt, fonts,
+                    fmt_art, cards_dir / f"quote{qi}_{name}.png", fmt, fonts,
                     quote=q.text, attribution=attribution, program=cfg.ministry.program_name, logo=cfg.ministry.logo,
                 )
                 m.cards[f"quote{qi}_{name}"] = str(out)

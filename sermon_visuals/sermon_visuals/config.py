@@ -21,6 +21,7 @@ class Ministry:
     program_name: str = "Program"
     speaker: str = ""
     organization: str = ""
+    audience_notes: str = ""
     logo: Path | None = None
     speaker_photo: Path | None = None
 
@@ -55,6 +56,7 @@ class Images:
     openai_model: str = "gpt-image-2"
     candidates: int = 2
     image_size: str = "2K"
+    recompose: bool = True
 
 
 @dataclass
@@ -111,6 +113,7 @@ def load_config(path: str | os.PathLike = "config.toml") -> Config:
         program_name=m.get("program_name", "Program"),
         speaker=m.get("speaker", ""),
         organization=m.get("organization", ""),
+        audience_notes=" ".join(m.get("audience_notes", "").split()),
         logo=_asset(paths.assets_dir, m.get("logo")),
         speaker_photo=_asset(paths.assets_dir, m.get("speaker_photo")),
     )

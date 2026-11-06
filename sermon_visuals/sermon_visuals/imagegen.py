@@ -26,6 +26,14 @@ def build_prompt(cfg: Config, concept_prompt: str) -> str:
     return " ".join(p for p in parts if p)
 
 
+def recompose_prompt(cfg: Config, aspect: str) -> str:
+    return (
+        f"Recompose this exact scene as a {aspect} image. Keep the same subject, palette, lighting and painterly style. "
+        "Keep the main subject fully in frame and roughly centred, and extend the scene naturally to fill the new frame. "
+        + cfg.style.negative
+    )
+
+
 class ImageProvider(Protocol):
     name: str
     model: str

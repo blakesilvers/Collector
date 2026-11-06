@@ -52,7 +52,8 @@ def required_keys(cfg: Config, stages: list[str], transcription: bool = True) ->
     keys = []
     if "brief" in stages:
         keys.append("ANTHROPIC_API_KEY")
-    if "images" in stages:
+    compose_needs_model = "compose" in stages and cfg.images.recompose and any(f != "youtube" for f in cfg.compose.formats)
+    if "images" in stages or compose_needs_model:
         keys.append("GEMINI_API_KEY" if cfg.images.provider == "gemini" else "OPENAI_API_KEY")
     if "transcript" in stages and transcription and cfg.transcribe.provider in ("gemini", "openai"):
         keys.append("GEMINI_API_KEY" if cfg.transcribe.provider == "gemini" else "OPENAI_API_KEY")

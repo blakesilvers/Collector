@@ -10,6 +10,12 @@ assets_dir = "assets"      # logo, speaker photo, style reference images
 program_name = "Born to Win"
 speaker = "Ronald L. Dart"
 organization = "Christian Educational Ministries"
+# Who the audience is and what they already hold, so the brief's review flags stay useful.
+# Flags are for factual slips, misattributed words and wording that could embarrass the ministry,
+# not for the ministry's own teaching.
+audience_notes = """Long-time listeners of a Bible-teaching radio program in the Church of God tradition:
+the ministry keeps the seventh-day Sabbath and the biblical Holy Days and does not observe Christmas or Easter.
+Do not flag that teaching as sensitive; the audience expects it."""
 logo = "logo.png"              # relative to assets_dir; optional
 speaker_photo = "speaker.jpg"  # relative to assets_dir; optional, used on the YouTube frame
 
@@ -42,6 +48,7 @@ gemini_model = "gemini-3.1-flash-image"   # Nano Banana 2. "gemini-3-pro-image" 
 openai_model = "gpt-image-2"
 candidates = 2              # images generated per visual concept
 image_size = "2K"           # gemini only: 1K | 2K | 4K
+recompose = true            # re-frame the chosen painting for square and vertical cards (2 extra images) instead of cropping
 
 [compose]
 formats = ["youtube", "square", "vertical"]

@@ -154,17 +154,21 @@ def test_pipeline_offline(workspace: Path, monkeypatch):
     assert m.errors == {}
     assert m.done == ["transcript", "brief", "images", "compose"]
     assert len(m.art) == cfg.images.candidates  # one concept x candidates
-    assert all("No text" in p or "no text" in p.lower() for p in provider.calls)
+    assert len(provider.calls) == cfg.images.candidates + 2  # plus square + vertical re-framings
+    assert all("no text" in p.lower() for p in provider.calls)
     assert "Do not depict Jesus" in provider.calls[0]
+    assert "Recompose this exact scene as a 1:1 image" in provider.calls[cfg.images.candidates]
     assert m.chosen_art == m.art[0].path
+    assert Path(m.chosen_art).with_name("concept1_1_square.png").exists()
     # quote 1 verified -> square + vertical cards; quote 2 unverified -> no cards
     assert {"youtube_frame", "thumbnail", "quote1_square", "quote1_vertical"} == set(m.cards)
     brief = json.loads(Path(m.brief).read_text(encoding="utf-8"))
     assert brief["title"] == "A Government You Live Under"
 
     # Re-running does nothing new.
+    calls_before = len(provider.calls)
     m2 = pipeline.run_program(cfg, "btw-0001", ["images"])
-    assert len(provider.calls) == cfg.images.candidates and len(m2.art) == cfg.images.candidates
+    assert len(provider.calls) == calls_before and len(m2.art) == cfg.images.candidates
 
     # video stage fails cleanly without audio, and leaves earlier stages intact.
     m3 = pipeline.run_program(cfg, "btw-0001", ["video"])
@@ -193,6 +197,10 @@ def test_dotenv_and_key_preflight(workspace: Path, monkeypatch):
         monkeypatch.delenv(k, raising=False)
     cfg = load_config(workspace / "config.toml")
     assert env.missing_keys(cfg, ["transcript", "brief", "images"]) == ["ANTHROPIC_API_KEY", "GEMINI_API_KEY"]
+    assert env.required_keys(cfg, ["compose"]) == ["GEMINI_API_KEY"]  # re-framing square/vertical cards
+    cfg.images.recompose = False
+    assert env.required_keys(cfg, ["compose"]) == []
+    cfg.images.recompose = True
     cfg.transcribe.provider = "openai"
     assert env.needs_transcription(cfg, ["btw-0001"]) is False  # sidecar .txt exists
     assert env.needs_transcription(cfg, ["btw-0002"]) is True
