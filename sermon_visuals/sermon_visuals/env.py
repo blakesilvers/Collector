@@ -78,7 +78,8 @@ def doctor(cfg: Config, env_path: Path) -> list[tuple[bool, str]]:
     checks: list[tuple[bool, str]] = []
     v = sys.version_info
     checks.append((v >= (3, 11), f"Python {v.major}.{v.minor}.{v.micro} (needs 3.11 or newer)"))
-    checks.append((shutil.which("ffmpeg") is not None, "ffmpeg on PATH (needed for the video stage; brew install ffmpeg / winget install ffmpeg / apt install ffmpeg)"))
+    ffmpeg_note = "" if cfg.video.enabled else " (optional: video.enabled is false)"
+    checks.append((shutil.which("ffmpeg") is not None, "ffmpeg on PATH (needed for the video stage; brew install ffmpeg / winget install ffmpeg / apt install ffmpeg)" + ffmpeg_note))
     try:
         fonts = compose.Fonts.resolve(cfg.compose.font_serif, cfg.compose.font_sans)
         checks.append((True, f"fonts: {Path(fonts.serif).name}, {Path(fonts.sans).name}"))

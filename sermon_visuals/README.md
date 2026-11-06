@@ -18,7 +18,11 @@ You need a terminal (Terminal on Mac, PowerShell on Windows), Python 3.11 or new
 - git: https://git-scm.com/downloads
 - ffmpeg: Mac `brew install ffmpeg`; Windows `winget install ffmpeg`; Ubuntu `sudo apt install ffmpeg`
 
-Then paste these one at a time. The first three fetch the code; the rest set it up.
+**No git?** Download the code as a ZIP instead:
+https://github.com/blakesilvers/Collector/archive/refs/heads/claude/serene-mendel-0btcz1.zip
+Unzip it, open a terminal inside the `sermon_visuals` folder, and skip to `pip install -e .` below.
+
+With git, paste these one at a time. The first three fetch the code; the rest set it up.
 
 ```bash
 git clone https://github.com/blakesilvers/Collector.git
