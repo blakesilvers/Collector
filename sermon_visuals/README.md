@@ -53,7 +53,7 @@ python -m sermon_visuals init
 
 - `ANTHROPIC_API_KEY` from https://console.anthropic.com/settings/keys (the brief)
 - `GEMINI_API_KEY` from https://aistudio.google.com/apikey (the paintings)
-- `OPENAI_API_KEY` only if you switch `images.provider` to `openai` or need transcription
+- `OPENAI_API_KEY` only if you switch `images.provider` or `transcribe.provider` to `openai`
 
 Put one MP3 in `programs/` (and its transcript as a `.txt` with the same name, if you have one). Then:
 
@@ -76,7 +76,7 @@ On Windows, if `python` is not found, try `py` in place of `python`. If `pip` is
 
 | Stage | What happens | Service |
 |---|---|---|
-| `transcript` | Uses `<stem>.txt` next to the audio if present, else transcribes | OpenAI transcription (optional) |
+| `transcript` | Uses `<stem>.txt` next to the audio if present, else transcribes | Gemini (default) or OpenAI |
 | `brief` | Transcript -> title, summary, scripture refs, pull quotes, two image concepts, thumbnail hook, review flags | Claude (structured output) |
 | `images` | Each concept -> N candidate paintings in 16:9, house style + optional reference images | Gemini (Nano Banana) or OpenAI Images |
 | `compose` | Chosen art + text -> YouTube frame, thumbnail, square and vertical quote cards | Pillow |
@@ -159,7 +159,7 @@ Figures from the vendors' pricing pages on 2026-11-06; check them before budgeti
 - Brief: one Claude call over a ~30-minute transcript, a few cents.
 - Images: 2 concepts x 2 candidates = 4 images. Nano Banana 2 at 2K is about $0.10 per image,
   so roughly $0.40. GPT Image 2 at medium quality is in the same range.
-- Transcription (only when no transcript exists): under $0.01 per minute of audio on the mini model.
+- Transcription (only when no transcript exists): a few cents per program on Gemini Flash-Lite; under $0.01 per minute on OpenAI's mini model.
 - Compose and video: free, local.
 
 ## Tests

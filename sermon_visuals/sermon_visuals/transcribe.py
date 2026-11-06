@@ -40,17 +40,57 @@ def get_transcript(cfg: Config, stem: str, audio: Path | None, out_dir: Path) ->
     if audio is None:
         raise FileNotFoundError(f"No audio or transcript found for {stem} in {cfg.paths.input_dir}.")
 
-    from openai import OpenAI
-
-    client = OpenAI()
-    log.info("Transcribing %s with %s", audio.name, cfg.transcribe.model)
-    with audio.open("rb") as f:
-        result = client.audio.transcriptions.create(
-            model=cfg.transcribe.model,
-            file=f,
-            response_format="text",
-        )
-    text = result if isinstance(result, str) else getattr(result, "text", str(result))
+    log.info("Transcribing %s with %s (%s)", audio.name, cfg.transcribe.model, cfg.transcribe.provider)
+    if cfg.transcribe.provider == "gemini":
+        text = _transcribe_gemini(audio, cfg.transcribe.model)
+    else:
+        text = _transcribe_openai(audio, cfg.transcribe.model)
+    if not text.strip():
+        raise RuntimeError(f"Transcription of {audio.name} came back empty.")
     out_dir.mkdir(parents=True, exist_ok=True)
     cached.write_text(text.strip() + "\n", encoding="utf-8")
     return cached
+
+
+def _transcribe_openai(audio: Path, model: str) -> str:
+    from openai import OpenAI
+
+    client = OpenAI()
+    with audio.open("rb") as f:
+        result = client.audio.transcriptions.create(model=model, file=f, response_format="text")
+    return result if isinstance(result, str) else getattr(result, "text", str(result))
+
+
+TRANSCRIBE_PROMPT = (
+    "Transcribe this audio word for word. Output only the spoken words as plain paragraphs: "
+    "no timestamps, no speaker labels, no headings, no commentary, no summary. "
+    "Keep every sentence; do not condense or paraphrase."
+)
+
+
+def _transcribe_gemini(audio: Path, model: str) -> str:
+    """Upload the audio with the Files API, wait until it is ready, then ask a Gemini text model to transcribe it."""
+    import time
+
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client()  # reads GEMINI_API_KEY
+    uploaded = client.files.upload(file=audio)
+    while uploaded.state == types.FileState.PROCESSING:
+        time.sleep(2)
+        uploaded = client.files.get(name=uploaded.name)
+    if uploaded.state == types.FileState.FAILED:
+        raise RuntimeError(f"Gemini could not process {audio.name}.")
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=[uploaded, TRANSCRIBE_PROMPT],
+            config=types.GenerateContentConfig(temperature=0.0, max_output_tokens=65536),
+        )
+    finally:
+        try:
+            client.files.delete(name=uploaded.name)
+        except Exception:  # best effort; uploads expire on their own
+            pass
+    return response.text or ""

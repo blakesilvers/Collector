@@ -44,8 +44,8 @@ class Extract:
 
 @dataclass
 class Transcribe:
-    provider: str = "openai"
-    model: str = "gpt-4o-mini-transcribe"
+    provider: str = "gemini"
+    model: str = "gemini-3.5-flash-lite"
 
 
 @dataclass
@@ -139,8 +139,8 @@ def load_config(path: str | os.PathLike = "config.toml") -> Config:
 
     if images.provider not in ("gemini", "openai"):
         raise ValueError(f"images.provider must be gemini or openai, got {images.provider!r}")
-    if transcribe.provider not in ("openai", "none"):
-        raise ValueError(f"transcribe.provider must be openai or none, got {transcribe.provider!r}")
+    if transcribe.provider not in ("gemini", "openai", "none"):
+        raise ValueError(f"transcribe.provider must be gemini, openai or none, got {transcribe.provider!r}")
     bad = [f for f in compose.formats if f not in ("youtube", "square", "vertical")]
     if bad:
         raise ValueError(f"compose.formats has unknown entries: {bad}")

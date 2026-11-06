@@ -11,8 +11,8 @@ from .config import Config
 
 KEY_INFO = {
     "ANTHROPIC_API_KEY": "the brief (titles, quotes, image ideas). Get one at https://console.anthropic.com/settings/keys",
-    "GEMINI_API_KEY": "images with Google Nano Banana. Get one at https://aistudio.google.com/apikey",
-    "OPENAI_API_KEY": "images with OpenAI and/or transcription. Get one at https://platform.openai.com/api-keys",
+    "GEMINI_API_KEY": "images (Nano Banana) and transcription. Get one at https://aistudio.google.com/apikey",
+    "OPENAI_API_KEY": "images or transcription with OpenAI, only if selected in config.toml. Get one at https://platform.openai.com/api-keys",
 }
 
 ENV_TEMPLATE = """# API keys for sermon-visuals. One per line, no quotes. This file is private; do not share or commit it.
@@ -54,8 +54,8 @@ def required_keys(cfg: Config, stages: list[str], transcription: bool = True) ->
         keys.append("ANTHROPIC_API_KEY")
     if "images" in stages:
         keys.append("GEMINI_API_KEY" if cfg.images.provider == "gemini" else "OPENAI_API_KEY")
-    if "transcript" in stages and cfg.transcribe.provider == "openai" and transcription:
-        keys.append("OPENAI_API_KEY")
+    if "transcript" in stages and transcription and cfg.transcribe.provider in ("gemini", "openai"):
+        keys.append("GEMINI_API_KEY" if cfg.transcribe.provider == "gemini" else "OPENAI_API_KEY")
     return sorted(set(keys))
 
 

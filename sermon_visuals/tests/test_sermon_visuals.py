@@ -48,7 +48,7 @@ def fake_brief() -> Brief:
 
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
-    cfg_text = re.sub(r'^provider = "openai".*$', 'provider = "none"', EXAMPLE.read_text(encoding="utf-8"), count=1, flags=re.M)
+    cfg_text = re.sub(r'^provider = "gemini"         # gemini.*$', 'provider = "none"', EXAMPLE.read_text(encoding="utf-8"), count=1, flags=re.M)
     (tmp_path / "config.toml").write_text(cfg_text, encoding="utf-8")
     (tmp_path / "programs").mkdir()
     (tmp_path / "assets").mkdir()
@@ -198,6 +198,8 @@ def test_dotenv_and_key_preflight(workspace: Path, monkeypatch):
     assert env.needs_transcription(cfg, ["btw-0002"]) is True
     assert "OPENAI_API_KEY" in env.missing_keys(cfg, ["transcript"], transcription=True)
     assert env.missing_keys(cfg, ["transcript"], transcription=False) == []
+    cfg.transcribe.provider = "gemini"
+    assert env.required_keys(cfg, ["transcript"], transcription=True) == ["GEMINI_API_KEY"]
     (workspace / ".env").write_text("# keys\nANTHROPIC_API_KEY=sk-test\nGEMINI_API_KEY='g-test'\nOPENAI_API_KEY=\n", encoding="utf-8")
     assert env.load_dotenv(workspace / ".env") == ["ANTHROPIC_API_KEY", "GEMINI_API_KEY"]
     assert env.missing_keys(cfg, ["brief", "images"]) == []
