@@ -1,8 +1,5 @@
 # sermon-visuals configuration. Copy to config.toml and edit.
-# Secrets come from environment variables, never from this file:
-#   ANTHROPIC_API_KEY   (brief extraction)
-#   GEMINI_API_KEY      (images, provider = "gemini")
-#   OPENAI_API_KEY      (images, provider = "openai"; transcription)
+# API keys go in the .env file next to this one (written by `init`), never in here.
 
 [paths]
 input_dir = "programs"     # drop audio here: <stem>.mp3 (+ optional <stem>.txt transcript, <stem>.srt captions)
@@ -48,8 +45,8 @@ image_size = "2K"           # gemini only: 1K | 2K | 4K
 
 [compose]
 formats = ["youtube", "square", "vertical"]
-font_serif = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
-font_sans = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+font_serif = "auto"     # "auto" finds Georgia / DejaVu Serif / Liberation Serif; or give a path to a .ttf
+font_sans = "auto"
 
 [video]
 enabled = true

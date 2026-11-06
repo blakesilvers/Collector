@@ -10,6 +10,64 @@ scripture reference with Pillow. That removes the misspelled-verse failure mode 
 card on brand. Pull quotes are checked verbatim against the transcript, and a quote that is not
 found word-for-word never makes it onto a card.
 
+## Quick start (from zero)
+
+You need a terminal (Terminal on Mac, PowerShell on Windows), Python 3.11 or newer, git, and ffmpeg.
+
+- Python: https://www.python.org/downloads/ (on Windows tick "Add python.exe to PATH" in the installer)
+- git: https://git-scm.com/downloads
+- ffmpeg: Mac `brew install ffmpeg`; Windows `winget install ffmpeg`; Ubuntu `sudo apt install ffmpeg`
+
+Then paste these one at a time. The first three fetch the code; the rest set it up.
+
+```bash
+git clone https://github.com/blakesilvers/Collector.git
+```
+
+```bash
+cd Collector
+```
+
+```bash
+git checkout claude/serene-mendel-0btcz1
+```
+
+```bash
+cd sermon_visuals
+```
+
+```bash
+pip install -e .
+```
+
+```bash
+python -m sermon_visuals init
+```
+
+`init` writes two files next to each other: `config.toml` (names, house style, guardrails) and `.env`
+(API keys). Open `.env` in any text editor and paste your keys after the `=` signs:
+
+- `ANTHROPIC_API_KEY` from https://console.anthropic.com/settings/keys (the brief)
+- `GEMINI_API_KEY` from https://aistudio.google.com/apikey (the paintings)
+- `OPENAI_API_KEY` only if you switch `images.provider` to `openai` or need transcription
+
+Put one MP3 in `programs/` (and its transcript as a `.txt` with the same name, if you have one). Then:
+
+```bash
+python -m sermon_visuals doctor
+```
+
+`doctor` prints OK or FIX for Python, ffmpeg, fonts, keys and inputs, and says what to do about each
+FIX. When everything is OK:
+
+```bash
+python -m sermon_visuals run
+```
+
+Open `output/review.html` in a browser. Everything the program made is in `output/<name>/`.
+
+On Windows, if `python` is not found, try `py` in place of `python`. If `pip` is not found, use `python -m pip`.
+
 ## Pipeline
 
 | Stage | What happens | Service |
@@ -23,27 +81,15 @@ found word-for-word never makes it onto a card.
 Everything is idempotent. A `manifest.json` in each program folder records what is done; re-running
 skips finished stages, and `--force` redoes them.
 
-## Setup
+## Configuration
 
-```bash
-cd sermon_visuals
-pip install -e .            # pulls anthropic, google-genai, openai, pillow, pydantic
-python -m sermon_visuals init
-```
+`config.toml` holds the program name, speaker, house-style prompt, the `avoid` list and
+`depict_christ`. Put the ministry logo, a speaker photo and (optionally) one or two style reference
+images in `assets/` and name them in the config. Fonts are found automatically (Georgia, DejaVu
+Serif or Liberation Serif); set `compose.font_serif` to a `.ttf` path to use something else.
 
-`init` copies `config.example.toml` to `config.toml` and creates `programs/`, `assets/`, `output/`.
-Edit the config: program name, speaker, house-style prompt, the `avoid` list and `depict_christ`.
-Put the ministry logo, a speaker photo and (optionally) one or two style reference images in `assets/`.
-
-Keys go in the environment, never in the config:
-
-```bash
-export ANTHROPIC_API_KEY=...     # brief
-export GEMINI_API_KEY=...        # images, provider = "gemini"
-export OPENAI_API_KEY=...        # images, provider = "openai"; transcription
-```
-
-ffmpeg must be on PATH for the video stage.
+Keys live in `.env` next to the config. Environment variables with the same names take precedence,
+so the tool also works in CI or on a server without the file.
 
 ## Daily use
 

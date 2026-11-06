@@ -11,13 +11,13 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from sermon_visuals import compose, extract, pipeline, video
+from sermon_visuals import compose, env, extract, pipeline, video
 from sermon_visuals.cli import main
 from sermon_visuals.config import load_config
 from sermon_visuals.models import Brief, PullQuote, VisualConcept
 
 HERE = Path(__file__).resolve().parent
-EXAMPLE = HERE.parent / "config.example.toml"
+EXAMPLE = HERE.parent / "sermon_visuals" / "config.example.toml"
 
 TRANSCRIPT = (
     "Good morning. Today I want to talk about the beatitudes, Matthew chapter five. "
@@ -105,9 +105,7 @@ def test_normalize_ignores_punctuation_and_case():
 
 def test_quote_card_and_title_frame(tmp_path: Path):
     art = make_art(tmp_path / "art.png")
-    fonts = compose.Fonts(
-        "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    )
+    fonts = compose.Fonts.resolve()
     long_quote = " ".join(["word"] * 60)
     for name, fmt in compose.FORMATS.items():
         out = compose.render_quote_card(art, tmp_path / f"q_{name}.png", fmt, fonts, long_quote, "— Ron Dart", "Born to Win")
@@ -122,7 +120,7 @@ def test_fit_text_shrinks_to_fit(tmp_path: Path):
     from PIL import ImageDraw
     img = Image.new("RGB", (400, 200))
     draw = ImageDraw.Draw(img)
-    make = lambda s: compose.ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", s)
+    make = lambda s: compose.ImageFont.truetype(compose.Fonts.resolve().sans, s)
     font, lines, line_h = compose.fit_text(draw, " ".join(["lorem"] * 40), make, 360, 180, start=60, minimum=10)
     assert len(lines) * line_h <= 180
     assert all(draw.textlength(l, font=font) <= 360 for l in lines)
@@ -177,6 +175,8 @@ def test_cli_choose_and_review(workspace: Path, monkeypatch, capsys):
     cfg = load_config(workspace / "config.toml")
     monkeypatch.setattr(extract, "extract_brief", lambda cfg, text: fake_brief())
     monkeypatch.setattr(pipeline.imagegen, "make_provider", lambda cfg: FakeProvider())
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setenv("GEMINI_API_KEY", "test")
     monkeypatch.chdir(workspace)
     assert main(["run", "--stages", "transcript,brief,images,compose"]) == 0
     assert (workspace / "output" / "review.html").exists()
@@ -186,3 +186,34 @@ def test_cli_choose_and_review(workspace: Path, monkeypatch, capsys):
     assert main(["choose", "btw-0001", "nope.png"]) == 1
     assert main(["list"]) == 0
     assert "btw-0001" in capsys.readouterr().out
+
+
+def test_dotenv_and_key_preflight(workspace: Path, monkeypatch):
+    for k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    cfg = load_config(workspace / "config.toml")
+    assert env.missing_keys(cfg, ["transcript", "brief", "images"]) == ["ANTHROPIC_API_KEY", "GEMINI_API_KEY"]
+    cfg.transcribe.provider = "openai"
+    assert env.needs_transcription(cfg, ["btw-0001"]) is False  # sidecar .txt exists
+    assert env.needs_transcription(cfg, ["btw-0002"]) is True
+    assert "OPENAI_API_KEY" in env.missing_keys(cfg, ["transcript"], transcription=True)
+    assert env.missing_keys(cfg, ["transcript"], transcription=False) == []
+    (workspace / ".env").write_text("# keys\nANTHROPIC_API_KEY=sk-test\nGEMINI_API_KEY='g-test'\nOPENAI_API_KEY=\n", encoding="utf-8")
+    assert env.load_dotenv(workspace / ".env") == ["ANTHROPIC_API_KEY", "GEMINI_API_KEY"]
+    assert env.missing_keys(cfg, ["brief", "images"]) == []
+    monkeypatch.chdir(workspace)
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    (workspace / ".env").write_text("ANTHROPIC_API_KEY=\n", encoding="utf-8")
+    assert main(["run", "--stages", "brief"]) == 2  # refuses before calling anything
+
+
+def test_init_and_doctor(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    for k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    assert main(["init"]) == 0
+    assert (tmp_path / "config.toml").exists() and (tmp_path / ".env").exists()
+    assert (tmp_path / "programs").is_dir()
+    assert main(["doctor"]) == 1
+    out = capsys.readouterr().out
+    assert "FIX  ANTHROPIC_API_KEY" in out and "0 program(s)" in out

@@ -21,4 +21,4 @@ sermon-visuals = "sermon_visuals.cli:main"
 include = ["sermon_visuals*"]
 
 [tool.setuptools.package-data]
-sermon_visuals = ["prompts/*.md"]
+sermon_visuals = ["prompts/*.md", "config.example.toml"]

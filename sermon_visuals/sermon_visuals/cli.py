@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import argparse
 import logging
-import shutil
 import sys
 from importlib import resources
 from pathlib import Path
 
-from . import pipeline, review
+from . import env, pipeline, review
 from .config import load_config
 
 
@@ -18,14 +17,35 @@ def cmd_init(args) -> int:
     if target.exists():
         print(f"{target} already exists; not overwriting.")
     else:
-        example = Path(__file__).resolve().parent.parent / "config.example.toml"
-        shutil.copy(example, target)
+        example = resources.files("sermon_visuals").joinpath("config.example.toml")
+        target.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
         print(f"Wrote {target}")
+    env_path = target.resolve().parent / ".env"
+    if not env_path.exists():
+        env_path.write_text(env.ENV_TEMPLATE, encoding="utf-8")
+        print(f"Wrote {env_path}")
     for d in ("programs", "assets", "output"):
-        Path(d).mkdir(exist_ok=True)
-    print("Created programs/, assets/, output/. Drop audio (and optional .txt transcripts, .srt captions) in programs/.")
-    print("Set ANTHROPIC_API_KEY and GEMINI_API_KEY (or OPENAI_API_KEY) in the environment, then: python -m sermon_visuals run")
+        (target.resolve().parent / d).mkdir(exist_ok=True)
+    print()
+    print("Next steps:")
+    print(f"  1. Open {env_path} in a text editor and paste your API keys after the = signs.")
+    print(f"  2. Open {target} and set the program name, speaker and house style.")
+    print("  3. Put audio files (and transcripts, if you have them) in programs/.")
+    print("  4. python -m sermon_visuals doctor     # checks everything is in place")
+    print("  5. python -m sermon_visuals run        # then open output/review.html")
     return 0
+
+
+def cmd_doctor(args) -> int:
+    cfg = load_config(args.config)
+    env_path = Path(args.config).resolve().parent / ".env"
+    bad = 0
+    for ok, msg in env.doctor(cfg, env_path):
+        print(("  OK   " if ok else "  FIX  ") + msg)
+        bad += 0 if ok or "(optional)" in msg else 1
+    print()
+    print("Everything needed is in place. Run: python -m sermon_visuals run" if bad == 0 else f"{bad} item(s) need attention before `run` will get far.")
+    return 0 if bad == 0 else 1
 
 
 def cmd_list(args) -> int:
@@ -46,6 +66,10 @@ def cmd_run(args) -> int:
         print(f"Unknown stage(s): {unknown}. Choose from {pipeline.STAGES}", file=sys.stderr)
         return 2
     stems = args.only or pipeline.discover_stems(cfg)
+    missing = env.missing_keys(cfg, stages, env.needs_transcription(cfg, stems))
+    if missing:
+        print(env.explain_missing(missing, Path(args.config).resolve().parent / ".env"), file=sys.stderr)
+        return 2
     if not stems:
         print(f"No programs found in {cfg.paths.input_dir}", file=sys.stderr)
         return 1
@@ -88,6 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init", help="write config.toml and create folders").set_defaults(fn=cmd_init)
+    sub.add_parser("doctor", help="check Python, ffmpeg, fonts, keys and inputs").set_defaults(fn=cmd_doctor)
     sub.add_parser("list", help="show each program's progress").set_defaults(fn=cmd_list)
     r = sub.add_parser("run", help="run the pipeline")
     r.add_argument("--only", nargs="*", metavar="STEM", help="limit to these programs")
@@ -105,4 +130,5 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    env.load_dotenv(Path(args.config).resolve().parent / ".env")
     return args.fn(args)

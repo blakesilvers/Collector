@@ -26,10 +26,44 @@ FORMATS = {
 }
 
 
+SERIF_CANDIDATES = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+    "/System/Library/Fonts/Supplemental/Georgia Bold.ttf",
+    "/Library/Fonts/Georgia Bold.ttf",
+    "C:/Windows/Fonts/georgiab.ttf",
+    "C:/Windows/Fonts/timesbd.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
+]
+SANS_CANDIDATES = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/Library/Fonts/Arial.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+    "C:/Windows/Fonts/segoeui.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+]
+
+
+def find_font(configured: str, candidates: list[str]) -> str:
+    """Return the configured font if it exists, else the first known system font, else raise."""
+    if configured and configured != "auto":
+        if Path(configured).exists():
+            return configured
+        raise FileNotFoundError(f"Font not found: {configured}. Set compose.font_serif / font_sans in config.toml to a .ttf on this computer, or \"auto\".")
+    for c in candidates:
+        if Path(c).exists():
+            return c
+    raise FileNotFoundError("No usable .ttf font found. Set compose.font_serif and compose.font_sans in config.toml to a font file on this computer.")
+
+
 @dataclass
 class Fonts:
     serif: str
     sans: str
+
+    @classmethod
+    def resolve(cls, serif: str = "auto", sans: str = "auto") -> "Fonts":
+        return cls(find_font(serif, SERIF_CANDIDATES), find_font(sans, SANS_CANDIDATES))
 
     def serif_at(self, size: int) -> ImageFont.FreeTypeFont:
         return ImageFont.truetype(self.serif, size)

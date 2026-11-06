@@ -81,7 +81,7 @@ def stage_compose(cfg: Config, m: Manifest) -> None:
         raise RuntimeError("no artwork chosen; run the images stage or `choose` first")
     brief = load_brief(Path(m.brief))
     art = Path(m.chosen_art)
-    fonts = compose.Fonts(cfg.compose.font_serif, cfg.compose.font_sans)
+    fonts = compose.Fonts.resolve(cfg.compose.font_serif, cfg.compose.font_sans)
     cards_dir = program_dir(cfg, m.stem) / "cards"
     attribution = f"— {cfg.ministry.speaker}" if cfg.ministry.speaker else ""
     subtitle = " · ".join(x for x in [cfg.ministry.speaker, brief.primary_scripture] if x)

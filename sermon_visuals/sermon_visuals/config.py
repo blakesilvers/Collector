@@ -60,8 +60,8 @@ class Images:
 @dataclass
 class Compose:
     formats: list[str] = field(default_factory=lambda: ["youtube", "square", "vertical"])
-    font_serif: str = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
-    font_sans: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    font_serif: str = "auto"
+    font_sans: str = "auto"
 
 
 @dataclass
