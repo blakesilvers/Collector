@@ -106,7 +106,7 @@ def stage_compose(cfg: Config, m: Manifest, provider: imagegen.ImageProvider | N
             out = compose.render_title_frame(
                 art, cards_dir / "youtube_frame.png", fmt, fonts,
                 title=brief.title, subtitle=subtitle, program=cfg.ministry.program_name,
-                speaker_photo=cfg.ministry.speaker_photo, logo=cfg.ministry.logo,
+                speaker_photo=cfg.ministry.speaker_photo, logo=cfg.ministry.logo, title_scale=0.075,
             )
             m.cards["youtube_frame"] = str(out)
             thumb = compose.render_title_frame(

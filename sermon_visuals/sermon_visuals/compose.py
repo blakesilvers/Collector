@@ -189,8 +189,11 @@ def render_title_frame(
     program: str,
     speaker_photo: Path | None = None,
     logo: Path | None = None,
+    title_scale: float = 0.11,
 ) -> Path:
-    """Thumbnail / video frame: big title lower-left, optional circular speaker photo lower-right."""
+    """Thumbnail / video frame: big title lower-left, optional circular speaker photo lower-right.
+    title_scale is the starting font size as a fraction of frame height; the video frame uses a
+    smaller one so a scripture band at the top never collides with the title."""
     base = cover(Image.open(art).convert("RGB"), fmt.width, fmt.height)
     canvas = _darken(base, strength=0.8, bottom_bias=True)
     draw = ImageDraw.Draw(canvas)
@@ -209,8 +212,8 @@ def render_title_frame(
         photo_w = d + margin
 
     box_w = fmt.width - 2 * margin - photo_w
-    box_h = round(fmt.height * 0.38)
-    font, lines, line_h = fit_text(draw, title, fonts.serif_at, box_w, box_h, start=round(fmt.height * 0.11), minimum=40)
+    box_h = round(fmt.height * (0.38 if title_scale >= 0.1 else 0.26))
+    font, lines, line_h = fit_text(draw, title, fonts.serif_at, box_w, box_h, start=round(fmt.height * title_scale), minimum=40)
     sub = fonts.sans_at(round(fmt.height * 0.038))
     tiny = fonts.sans_at(round(fmt.height * 0.028))
 
