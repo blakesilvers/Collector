@@ -65,6 +65,13 @@ def build_review(output_dir: Path, manifests: list[Manifest]) -> Path:
             parts.append("</div>")
         if m.video:
             parts.append(f"<p><a href='{html.escape(_rel(m.video, output_dir))}'>video</a></p>")
+        if m.sketches:
+            parts.append(f"<h3>Illustrated version ({len(m.sketches)} sketches)</h3><div class=grid>")
+            for i, p in enumerate(m.sketches, start=1):
+                parts.append(f"<figure><img src='{html.escape(_rel(p, output_dir))}' loading=lazy><figcaption>sketch {i}</figcaption></figure>")
+            parts.append("</div>")
+        if m.illustrated:
+            parts.append(f"<p><a href='{html.escape(_rel(m.illustrated, output_dir))}'>illustrated video</a></p>")
         if brief:
             parts.append("<details><summary>Full brief</summary><pre>" + html.escape(json.dumps(brief, indent=2)) + "</pre></details>")
         parts.append("</article>")

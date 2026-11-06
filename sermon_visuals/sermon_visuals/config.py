@@ -73,6 +73,23 @@ class Video:
 
 
 @dataclass
+class Illustrate:
+    segment_seconds: int = 60
+    min_seconds: float = 8.0
+    plan_model: str = "gemini-3.6-flash"
+    style: str = (
+        "Hand-drawn black ink marker sketch on off-white paper, loose confident linework, light cross-hatching, "
+        "generous white space, one accent colour (burnt orange) used sparingly, the feel of a whiteboard illustrator's drawing."
+    )
+    reference_images: list[Path] = field(default_factory=list)
+    chain_reference: bool = True
+    fps: int = 24
+    crossfade: float = 0.6
+    push_in: bool = True
+    title_seconds: float = 4.0
+
+
+@dataclass
 class Config:
     paths: Paths
     ministry: Ministry
@@ -82,6 +99,7 @@ class Config:
     images: Images
     compose: Compose
     video: Video
+    illustrate: Illustrate
 
 
 def _asset(assets_dir: Path, name: str | None) -> Path | None:
@@ -139,6 +157,16 @@ def load_config(path: str | os.PathLike = "config.toml") -> Config:
     compose = Compose(**{k: c[k] for k in Compose.__dataclass_fields__ if k in c})
     v = raw.get("video", {})
     video = Video(**{k: v[k] for k in Video.__dataclass_fields__ if k in v})
+    il = raw.get("illustrate", {})
+    il_refs = [paths.assets_dir / r for r in il.get("reference_images", [])]
+    missing = [str(r) for r in il_refs if not r.exists()]
+    if missing:
+        raise FileNotFoundError(f"illustrate.reference_images not found: {', '.join(missing)}")
+    illustrate = Illustrate(
+        **{k: il[k] for k in Illustrate.__dataclass_fields__ if k in il and k not in ("reference_images", "style")},
+        reference_images=il_refs,
+        style=" ".join(il.get("style", Illustrate.style).split()),
+    )
 
     if images.provider not in ("gemini", "openai"):
         raise ValueError(f"images.provider must be gemini or openai, got {images.provider!r}")
@@ -148,4 +176,4 @@ def load_config(path: str | os.PathLike = "config.toml") -> Config:
     if bad:
         raise ValueError(f"compose.formats has unknown entries: {bad}")
 
-    return Config(paths, ministry, style, extract, transcribe, images, compose, video)
+    return Config(paths, ministry, style, extract, transcribe, images, compose, video, illustrate)

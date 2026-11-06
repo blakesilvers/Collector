@@ -261,3 +261,52 @@ def test_pdf_transcript_is_used(workspace: Path, monkeypatch):
     path = transcribe.get_transcript(cfg, "btw-0001", None, workspace / "output" / "btw-0001")
     assert path.read_text(encoding="utf-8").strip() == "Blessed are the poor in spirit."
     assert "btw-0001" in pipeline.discover_stems(cfg)
+
+
+def test_validate_segments_fixes_gaps_overlaps_and_slivers():
+    from sermon_visuals.illustrate import Segment, validate_segments
+    raw = [
+        Segment(start=0, end=30, gist="a", illustration="x"),
+        Segment(start=28, end=61, gist="b", illustration="y"),   # overlaps previous
+        Segment(start=61, end=64, gist="c", illustration="z"),   # sliver -> merged into b
+        Segment(start=70, end=500, gist="d", illustration="w"),  # gap before, runs past the end
+    ]
+    fixed = validate_segments(raw, duration=120.0, minimum=8.0)
+    assert [(s.start, s.end) for s in fixed] == [(0.0, 30.0), (30.0, 64.0), (64.0, 120.0)]
+    assert fixed[1].gist == "b"
+
+
+def test_assembly_command_shape(tmp_path: Path):
+    from sermon_visuals.illustrate import build_assembly_command
+    frames = [(tmp_path / "a.png", 10.0), (tmp_path / "b.png", 5.0), (tmp_path / "c.png", 7.0)]
+    cmd = build_assembly_command(frames, tmp_path / "a.mp3", tmp_path / "o.mp4", fps=24, fade=0.5)
+    fc = cmd[cmd.index("-filter_complex") + 1]
+    assert fc.count("zoompan") == 3 and fc.count("xfade") == 2
+    assert "offset=9.500" in fc and "offset=14.000" in fc
+    assert cmd[cmd.index("-map") + 3] == "3:a"
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_illustrate_stage_offline(workspace: Path, monkeypatch):
+    from sermon_visuals.illustrate import Segment
+    cfg = load_config(workspace / "config.toml")
+    audio = workspace / "programs" / "btw-0001.mp3"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "anullsrc=r=22050:cl=mono", "-t", "6", str(audio)], check=True)
+    monkeypatch.setattr(extract, "extract_brief", lambda cfg, text: fake_brief())
+    provider = FakeProvider()
+    monkeypatch.setattr(pipeline.imagegen, "make_provider", lambda cfg: provider)
+    m = pipeline.run_program(cfg, "btw-0001", ["transcript"])
+    segments = [
+        Segment(start=0, end=2.5, gist="opening", illustration="a lamp on a table"),
+        Segment(start=2.5, end=6, gist="closing", illustration="a road at dusk"),
+    ]
+    cfg.illustrate.title_seconds = 0
+    cfg.illustrate.crossfade = 0.4
+    pipeline.stage_illustrate(cfg, m, provider=provider, segments=segments)
+    assert len(m.sketches) == 2 and all(Path(p).exists() for p in m.sketches)
+    assert "ink marker sketch" in provider.calls[0] and "a lamp on a table" in provider.calls[0]
+    out = Path(m.illustrated)
+    assert out.exists() and out.stat().st_size > 1000
+    dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(out)],
+                               capture_output=True, text=True, check=True).stdout.strip())
+    assert 5.0 <= dur <= 6.5

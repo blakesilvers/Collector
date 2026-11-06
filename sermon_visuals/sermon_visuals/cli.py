@@ -60,7 +60,7 @@ def cmd_list(args) -> int:
 
 def cmd_run(args) -> int:
     cfg = load_config(args.config)
-    stages = [s.strip() for s in args.stages.split(",")] if args.stages else pipeline.STAGES
+    stages = [s.strip() for s in args.stages.split(",")] if args.stages else pipeline.DEFAULT_STAGES
     unknown = [s for s in stages if s not in pipeline.STAGES]
     if unknown:
         print(f"Unknown stage(s): {unknown}. Choose from {pipeline.STAGES}", file=sys.stderr)
@@ -81,6 +81,12 @@ def cmd_run(args) -> int:
         print(f"{len(failed)} program(s) had errors: {', '.join(failed)}", file=sys.stderr)
         return 1
     return 0
+
+
+def cmd_illustrate(args) -> int:
+    """Shortcut for `run --stages transcript,illustrate` (plus brief/compose first if the title frame is wanted)."""
+    args.stages = "transcript,illustrate"
+    return cmd_run(args)
 
 
 def cmd_review(args) -> int:
@@ -119,6 +125,10 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--stages", help=f"comma-separated subset of {','.join(pipeline.STAGES)}")
     r.add_argument("--force", action="store_true", help="redo stages already marked done")
     r.set_defaults(fn=cmd_run)
+    il = sub.add_parser("illustrate", help="illustrated-narration video (one sketch per idea, timed to the audio)")
+    il.add_argument("--only", nargs="*", metavar="STEM")
+    il.add_argument("--force", action="store_true", help="re-plan and re-draw even if already done")
+    il.set_defaults(fn=cmd_illustrate)
     sub.add_parser("review", help="rebuild output/review.html").set_defaults(fn=cmd_review)
     c = sub.add_parser("choose", help="pick which artwork a program's cards use")
     c.add_argument("stem")

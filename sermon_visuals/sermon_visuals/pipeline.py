@@ -5,13 +5,14 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from . import compose, extract, imagegen, transcribe, video
+from . import compose, extract, illustrate, imagegen, transcribe, video
 from .config import Config
 from .models import ArtCandidate, Manifest, load_brief
 
 log = logging.getLogger(__name__)
 
-STAGES = ["transcript", "brief", "images", "compose", "video"]
+STAGES = ["transcript", "brief", "images", "compose", "video", "illustrate"]
+DEFAULT_STAGES = ["transcript", "brief", "images", "compose", "video"]  # illustrate is opt-in
 
 
 def discover_stems(cfg: Config) -> list[str]:
@@ -140,12 +141,39 @@ def stage_video(cfg: Config, m: Manifest) -> None:
     m.video = str(video.render_video(Path(frame), Path(m.audio), out, captions))
 
 
+def stage_illustrate(cfg: Config, m: Manifest, provider: imagegen.ImageProvider | None = None, segments=None) -> None:
+    """Illustrated-narration video. Needs audio and a transcript; the brief is used for the title frame if present."""
+    if not m.audio:
+        raise RuntimeError("no audio file for this program")
+    if not m.transcript:
+        raise RuntimeError("no transcript; run the transcript stage first")
+    pdir = program_dir(cfg, m.stem) / "illustrated"
+    plan_path = pdir / "segments.json"
+    if segments is None:
+        if plan_path.exists():
+            segments = illustrate.read_plan(plan_path)
+        else:
+            segments = illustrate.plan_segments(cfg, Path(m.audio), Path(m.transcript).read_text(encoding="utf-8"))
+            illustrate.write_plan(segments, plan_path)
+            illustrate.write_srt(segments, pdir / "segments.srt")
+    sketches = illustrate.draw_segments(cfg, segments, pdir / "sketches", provider)
+    frames = [(p, seg.end - seg.start) for p, seg in zip(sketches, segments)]
+    title = m.cards.get("youtube_frame")
+    if title and cfg.illustrate.title_seconds > 0:
+        frames.insert(0, (Path(title), cfg.illustrate.title_seconds))
+        frames[1] = (frames[1][0], max(frames[1][1] - cfg.illustrate.title_seconds, 1.0))  # keep sync with audio
+    out = pdir / f"{m.stem}_illustrated.mp4"
+    m.illustrated = str(illustrate.assemble(frames, Path(m.audio), out, cfg.illustrate.fps, cfg.illustrate.crossfade, cfg.illustrate.push_in))
+    m.sketches = [str(p) for p in sketches]
+
+
 RUNNERS = {
     "transcript": stage_transcript,
     "brief": stage_brief,
     "images": stage_images,
     "compose": stage_compose,
     "video": stage_video,
+    "illustrate": stage_illustrate,
 }
 
 

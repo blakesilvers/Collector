@@ -58,3 +58,20 @@ font_sans = "auto"
 [video]
 enabled = true
 burn_captions = true        # uses <stem>.srt if present
+
+[illustrate]
+# `python -m sermon_visuals illustrate --only <stem>`: an illustrated-narration video in the manner of a
+# whiteboard illustrator. The program is split into idea-sized segments, one ink sketch is drawn per
+# segment in a consistent hand, and the sketches are assembled over the audio with a slow push-in and
+# dissolves. About 30 sketches for a half-hour program, roughly $2.
+segment_seconds = 60        # target length of each illustrated stretch; shorter where ideas change
+min_seconds = 8             # slivers shorter than this are merged into the previous segment
+plan_model = "gemini-3.6-flash"   # listens to the audio and times the segments
+style = """Hand-drawn black ink marker sketch on off-white paper, loose confident linework, light cross-hatching,
+generous white space, one accent colour (burnt orange) used sparingly, the feel of a whiteboard illustrator's drawing."""
+reference_images = []       # optional sketches (relative to assets_dir) that fix the hand; else the previous sketch is used
+chain_reference = true      # send the previous sketch as a style reference so the hand stays consistent
+fps = 24
+crossfade = 0.6             # seconds of dissolve between sketches
+push_in = true              # slow zoom on each sketch
+title_seconds = 4           # the YouTube title frame shown before the first sketch (0 to skip)

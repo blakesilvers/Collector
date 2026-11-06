@@ -131,6 +131,28 @@ output/btw-2024-03-11/
   btw-2024-03-11.mp4
 ```
 
+## Illustrated version (whiteboard-illustrator style)
+
+```bash
+python -m sermon_visuals illustrate --only btw-2024-03-11
+```
+
+This produces a second video in which the program is illustrated as it goes, in the manner of a
+whiteboard illustrator drawing what the narrator is saying. Gemini listens to the audio and splits
+it into idea-sized segments (about a minute each, shorter where the idea changes); one ink sketch is
+drawn per segment in a fixed hand-drawn style, each request carrying the previous sketch as a style
+reference so the hand stays consistent; the sketches are assembled over the audio with a slow push-in
+and a dissolve at each change of idea. The YouTube title frame opens the video if the `compose` stage
+has run.
+
+Output lands in `output/<stem>/illustrated/`: `segments.json` (the plan, editable; delete a sketch
+and re-run to redraw it, edit a scene description and delete its sketch to change it), `segments.srt`
+(the gists as captions, useful to check sync in a player), `sketches/`, and the MP4. A half-hour
+program is about 30 sketches, roughly $2, and a few minutes of rendering.
+
+What this is not: a single continuous canvas with a visible drawing hand. That remains an
+illustrator's job. A stroke-by-stroke draw-on reveal of each sketch is the natural next step.
+
 ## Review before publishing
 
 The review page flags, per program:

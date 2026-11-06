@@ -65,6 +65,8 @@ class Manifest(BaseModel):
     chosen_art: str | None = None
     cards: dict[str, str] = Field(default_factory=dict)
     video: str | None = None
+    illustrated: str | None = None
+    sketches: list[str] = Field(default_factory=list)
     done: list[str] = Field(default_factory=list)
     errors: dict[str, str] = Field(default_factory=dict)
 
