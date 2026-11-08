@@ -11,6 +11,7 @@ feature flags or request-signing headers, which change often.
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +22,9 @@ from .parse import is_bookmarks_request, parse_timeline
 
 BOOKMARKS_PATH = "/i/bookmarks"
 LOGIN_MARKERS = ("/login", "/i/flow/login", "/i/flow/signup", "/account/access", "mode=login")
+
+
+COOKIE_ENV = ("X_AUTH_TOKEN", "X_CT0")   # alternative to `login`: copy these two cookies from a logged-in browser
 
 
 class NotLoggedIn(RuntimeError):
@@ -58,6 +62,29 @@ def _launch(p, profile_dir: Path, *, headless: bool, channel: str = "", executab
     if executable_path:
         kwargs["executable_path"] = executable_path
     return p.chromium.launch_persistent_context(str(profile_dir), **kwargs)
+
+
+def _inject_env_cookies(context, base_url: str) -> bool:
+    """If X_AUTH_TOKEN (and optionally X_CT0) are set, put them in the browser profile.
+
+    This lets the collector run on a machine where nobody can click through the login
+    page, such as a server or a cloud session. Copy the two cookies from a browser where
+    you are logged in to X: DevTools > Application > Cookies > x.com.
+    """
+    token = os.environ.get(COOKIE_ENV[0], "").strip()
+    if not token:
+        return False
+    host = urlsplit(base_url).hostname or "x.com"
+    domain = host if host.replace(".", "").isdigit() or host == "localhost" else "." + host.removeprefix("www.")
+    secure = base_url.startswith("https")
+    cookies = [{"name": "auth_token", "value": token, "domain": domain, "path": "/", "secure": secure,
+                "httpOnly": True, "sameSite": "None" if secure else "Lax", "expires": int(time.time()) + 365 * 86400}]
+    ct0 = os.environ.get(COOKIE_ENV[1], "").strip()
+    if ct0:
+        cookies.append({"name": "ct0", "value": ct0, "domain": domain, "path": "/", "secure": secure,
+                        "sameSite": "None" if secure else "Lax", "expires": int(time.time()) + 365 * 86400})
+    context.add_cookies(cookies)
+    return True
 
 
 def _logged_in(context, base_url: str) -> bool:
@@ -128,8 +155,10 @@ def capture(profile_dir: Path, *, known_ids: set[str] | None = None, full: bool 
     with _playwright()() as p:
         context = _launch(p, profile_dir, headless=headless, channel=channel, executable_path=executable_path)
         try:
+            _inject_env_cookies(context, base_url)
             if not _logged_in(context, base_url):
-                raise NotLoggedIn("No X session in the browser profile. Run:  python -m xbookmarks login")
+                raise NotLoggedIn("No X session in the browser profile. Run:  python -m xbookmarks login  "
+                                  f"(or set the {COOKIE_ENV[0]} and {COOKIE_ENV[1]} environment variables)")
             page = context.pages[0] if context.pages else context.new_page()
             page.on("response", lambda r: responses.append(r) if is_bookmarks_request(r.url) else None)
             page.goto(f"{base_url}{BOOKMARKS_PATH}", wait_until="domcontentloaded", timeout=page_timeout_ms)

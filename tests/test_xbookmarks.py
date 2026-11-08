@@ -306,6 +306,15 @@ class BrowserCaptureTests(unittest.TestCase):
             with self.assertRaises(browser.NotLoggedIn):
                 self.capture(self._profile(tmp, token=""))
 
+    def test_cookies_from_environment(self):
+        from xbookmarks import browser
+        with TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"X_AUTH_TOKEN": "good", "X_CT0": "csrf"}):
+            res = self.capture(self._profile(tmp, token=""), full=True, max_items=25)   # profile has no session
+            self.assertGreaterEqual(len(res.bookmarks), 20)
+        with TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"X_AUTH_TOKEN": "stale"}):
+            with self.assertRaises(browser.NotLoggedIn):
+                self.capture(self._profile(tmp, token=""))
+
     def test_expired_session_redirect(self):
         from xbookmarks import browser
         with TemporaryDirectory() as tmp:
