@@ -11,6 +11,12 @@ executable_path = ""             # full path to a Chromium binary, if needed
 max_items = 400                  # per incremental run; `run --all` ignores this
 keep_raw = true                  # also store X's full JSON for each post
 
+[links]
+enabled = true                   # follow each bookmarked link and describe it (GitHub: stars, README, skill/MCP signals)
+max_per_run = 60                 # links to look up per run; the rest are picked up next run or by `enrich`
+timeout = 15                     # seconds per request
+# GitHub API allows 60 lookups/hour anonymously; set env GITHUB_TOKEN for 5,000/hour. Raw files still work without it.
+
 [email]
 enabled = false                  # true = email each day's report to yourself
 smtp_host = "smtp.gmail.com"

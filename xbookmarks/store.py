@@ -15,6 +15,12 @@ CREATE TABLE IF NOT EXISTS bookmarks (
     links TEXT, media TEXT, quoted TEXT, is_retweet INTEGER, reply_to TEXT, metrics TEXT,
     raw TEXT, position INTEGER, first_seen TEXT, last_seen TEXT
 );
+CREATE TABLE IF NOT EXISTS links (
+    url TEXT PRIMARY KEY,
+    info TEXT,
+    fetched_at TEXT,
+    error TEXT
+);
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     started TEXT, finished TEXT, mode TEXT, fetched INTEGER, new INTEGER, error TEXT
@@ -92,6 +98,34 @@ class Store:
         return self._rows_to_bookmarks(self.db.execute(
             "SELECT * FROM bookmarks WHERE text LIKE ? OR author_handle LIKE ? OR author_name LIKE ? OR links LIKE ? "
             "ORDER BY first_seen DESC", (like, like, like, like)))
+
+    # -- links ---------------------------------------------------------------
+    def link_urls(self, bookmarks: list[Bookmark]) -> list[str]:
+        """Distinct outbound URLs across these bookmarks (own links plus quoted-post links are
+        not available, so only `links`), in order of appearance."""
+        seen, out = set(), []
+        for b in bookmarks:
+            for u in b.links:
+                if u not in seen:
+                    seen.add(u)
+                    out.append(u)
+        return out
+
+    def links_missing(self, urls: list[str]) -> list[str]:
+        return [u for u in urls if self.db.execute("SELECT 1 FROM links WHERE url = ? AND error = ''", (u,)).fetchone() is None]
+
+    def save_link(self, info: dict) -> None:
+        self.db.execute("INSERT OR REPLACE INTO links (url, info, fetched_at, error) VALUES (?,?,?,?)",
+                        (info["url"], json.dumps(info, ensure_ascii=False), info.get("fetched_at", _now()), info.get("error", "")))
+        self.db.commit()
+
+    def link_info(self, url: str) -> dict | None:
+        row = self.db.execute("SELECT info FROM links WHERE url = ?", (url,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def attach_links(self, bookmarks: list[Bookmark]) -> None:
+        for b in bookmarks:
+            b.link_info = [i for i in (self.link_info(u) for u in b.links) if i]
 
     # -- runs ----------------------------------------------------------------
     def start_run(self, mode: str) -> int:

@@ -7,6 +7,7 @@ import os
 import threading
 import time
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -330,12 +331,16 @@ class CliTests(unittest.TestCase):
             cfg_path.write_text(
                 f'[paths]\ndata_dir = "{d}/data"\nreports_dir = "{d}/reports"\n'
                 '[email]\nenabled = true\nusername = "me@example.com"\nto = "me@example.com"\n', encoding="utf-8")
+            from xbookmarks import enrich
+            fake_link = lambda url, timeout=15: enrich.LinkInfo(url=url, kind="page", title="Example page", description="An example.")
             with mock.patch.object(browser, "capture", return_value=fake), \
+                 mock.patch.object(enrich, "describe", side_effect=fake_link), \
                  mock.patch("xbookmarks.mailer.send", side_effect=lambda *a, **k: sent.append(a)):
                 self.assertEqual(cli.main(["--config", str(cfg_path), "run"]), 0)
                 self.assertEqual(len(sent), 1)
                 self.assertTrue(sent[0][1].startswith("X bookmarks report ") and "(6 new)" in sent[0][1])
                 self.assertIn("## 1. @alice", sent[0][2])
+                self.assertIn("- **Example page** — An example. <https://example.com/a>", sent[0][2])
                 # Second run: nothing new, so no email, and the report says so.
                 self.assertEqual(cli.main(["--config", str(cfg_path), "run"]), 0)
                 self.assertEqual(len(sent), 1)
@@ -344,6 +349,8 @@ class CliTests(unittest.TestCase):
             self.assertIn("0 new bookmarks since", reports[-1].read_text(encoding="utf-8"))
             self.assertTrue(Path(d, "data", "last_request.json").exists())
             self.assertEqual(cli.main(["--config", str(cfg_path), "report", "--days", "3"]), 0)
+            with mock.patch.object(enrich, "describe", side_effect=fake_link):
+                self.assertEqual(cli.main(["--config", str(cfg_path), "enrich"]), 0)
             self.assertEqual(cli.main(["--config", str(cfg_path), "search", "long form"]), 0)
             self.assertEqual(cli.main(["--config", str(cfg_path), "export", "--out", f"{d}/all.json"]), 0)
             self.assertEqual(len(json.loads(Path(d, "all.json").read_text(encoding="utf-8"))), 6)
@@ -365,3 +372,127 @@ class CliTests(unittest.TestCase):
             self.assertEqual([p.get_filename() for p in msg.iter_attachments()], ["r.json"])
         with mock.patch.dict(os.environ, {}, clear=True), self.assertRaises(RuntimeError):
             mailer.send({"username": "me@example.com"}, "s", "t")
+
+
+# ------------------------------------------------------------- link enrich ---
+
+GH_API = {"description": "Agent skills for Claude.", "stargazers_count": 1234, "forks_count": 50, "open_issues_count": 3,
+          "language": "Python", "license": {"spdx_id": "MIT"}, "archived": False, "fork": False,
+          "pushed_at": "2026-11-01T00:00:00Z", "created_at": "2025-01-01T00:00:00Z", "topics": ["claude", "mcp"],
+          "homepage": "", "default_branch": "main"}
+
+
+def router(table):
+    """Build a fake enrich.fetch from {url_substring: (status, content_type, body)}."""
+    def fake_fetch(url, headers=None, timeout=15):
+        for key, (status, ctype, body) in table.items():
+            if key in url:
+                return status, {"content-type": ctype}, body.encode() if isinstance(body, str) else body
+        return 404, {"content-type": "text/plain"}, b"not found"
+    return fake_fetch
+
+
+class EnrichTests(unittest.TestCase):
+    def setUp(self):
+        from xbookmarks import enrich
+        self.enrich = enrich
+        self.p_final = mock.patch.object(enrich, "_final_url", side_effect=lambda u, t: u)
+        self.p_final.start()
+
+    def tearDown(self):
+        self.p_final.stop()
+
+    def test_github_with_api(self):
+        table = {"api.github.com/repos/acme/skill": (200, "application/json", json.dumps(GH_API)),
+                 "raw.githubusercontent.com/acme/skill/main/README.md": (200, "text/plain", "# Skill\n\n![badge](x.png)\nDoes [things](u) with MCP."),
+                 "raw.githubusercontent.com/acme/skill/main/SKILL.md": (200, "text/plain", "---\nname: s\n---")}
+        with mock.patch.object(self.enrich, "fetch", side_effect=router(table)):
+            info = self.enrich.describe("https://github.com/acme/skill")
+        self.assertEqual(info.kind, "github")
+        self.assertEqual(info.title, "acme/skill")
+        self.assertEqual(info.description, "Agent skills for Claude.")
+        self.assertEqual(info.github["stars"], 1234)
+        self.assertEqual(info.github["license"], "MIT")
+        self.assertIn("Claude Code skill (SKILL.md)", info.signals)
+        self.assertIn("mentions MCP / Model Context Protocol", info.signals)
+        self.assertNotIn("ARCHIVED repository", info.signals)
+        self.assertEqual(info.readme_excerpt, "# Skill\nDoes things with MCP.")
+        self.assertIsInstance(info.github["days_since_push"], int)
+        self.assertEqual(info.error, "")
+
+    def test_github_api_blocked_falls_back_to_html_and_raw(self):
+        html_page = '<html><head><meta property="og:description" content="Old tool. Contribute to acme/old development by creating an account on GitHub."></head></html>'
+        table = {"api.github.com/repos/acme/old": (403, "application/json", "{}"),
+                 "github.com/acme/old": (200, "text/html; charset=utf-8", html_page),
+                 "raw.githubusercontent.com/acme/old/master/README.md": (200, "text/plain", "legacy readme"),
+                 "raw.githubusercontent.com/acme/old/master/.mcp.json": (200, "application/json", "{}")}
+        with mock.patch.object(self.enrich, "fetch", side_effect=router(table)):
+            info = self.enrich.describe("https://github.com/acme/old/")
+        self.assertEqual(info.description, "Old tool")
+        self.assertIn("api_note", info.github)
+        self.assertIn("MCP config (.mcp.json)", info.signals)     # found on master after main 404s
+        self.assertEqual(info.readme_excerpt, "legacy readme")
+
+    def test_github_subfolder_and_missing(self):
+        table = {"api.github.com/repos/acme/mono": (200, "application/json", json.dumps({**GH_API, "archived": True, "pushed_at": "2023-01-01T00:00:00Z"})),
+                 "raw.githubusercontent.com/acme/mono/main/skills/foo/SKILL.md": (200, "text/plain", "skill"),
+                 "api.github.com/repos/acme/gone": (404, "application/json", "{}")}
+        with mock.patch.object(self.enrich, "fetch", side_effect=router(table)):
+            info = self.enrich.describe("https://github.com/acme/mono/tree/main/skills/foo")
+            gone = self.enrich.describe("https://github.com/acme/gone")
+            blob = self.enrich.describe("https://github.com/acme/mono/blob/main/README.md")
+        self.assertEqual(info.title, "acme/mono (skills/foo)")
+        self.assertIn("Claude Code skill (SKILL.md)", info.signals)
+        self.assertIn("ARCHIVED repository", info.signals)
+        self.assertTrue(any(s.startswith("no commits in") for s in info.signals))
+        self.assertIn("no README found", info.signals)
+        self.assertIn("not found", gone.error)
+        self.assertEqual(blob.kind, "github-file")
+
+    def test_page_file_skipped_and_errors(self):
+        page = '<html><head><title>Tool &amp; Co</title><meta name="description" content="A  tool\n for things"><meta property="og:site_name" content="Tools"></head></html>'
+        table = {"example.com/tool": (200, "text/html; charset=utf-8", page),
+                 "example.com/file.pdf": (200, "application/pdf", "%PDF"),
+                 "example.com/missing": (404, "text/html", "")}
+        with mock.patch.object(self.enrich, "fetch", side_effect=router(table)):
+            info = self.enrich.describe("https://example.com/tool")
+            pdf = self.enrich.describe("https://example.com/file.pdf")
+            missing = self.enrich.describe("https://example.com/missing")
+        self.assertEqual((info.title, info.description, info.site), ("Tool & Co", "A tool for things", "Tools"))
+        self.assertTrue(pdf.title.startswith("application/pdf"))
+        self.assertEqual(missing.error, "HTTP 404")
+        self.assertEqual(self.enrich.describe("https://x.com/alice/status/1").kind, "skipped")
+        self.assertEqual(self.enrich.describe("https://t.co/abc").kind, "skipped")
+        with mock.patch.object(self.enrich, "fetch", side_effect=ConnectionError("URLError: dns")):
+            err = self.enrich.describe("https://nope.invalid/")
+        self.assertEqual(err.kind, "error")
+        self.assertIn("dns", err.error)
+
+    def test_store_roundtrip_and_report(self):
+        bms, _ = parse.parse_timeline(SAMPLE)
+        info = self.enrich.LinkInfo(url="https://example.com/a", kind="github", title="acme/skill", description="Does X.",
+                                    github={"stars": 12, "language": "Python", "days_since_push": 3, "license": "MIT"},
+                                    signals=["Claude Code skill (SKILL.md)"], readme_excerpt="# Skill\nhello")
+        with TemporaryDirectory() as d:
+            store = Store(Path(d) / "b.sqlite")
+            store.upsert(bms)
+            self.assertEqual(store.links_missing(store.link_urls(bms)), ["https://example.com/a", "https://f.example"])
+            store.save_link(info.to_dict())
+            store.save_link(self.enrich.LinkInfo(url="https://f.example", kind="error", error="HTTP 500").to_dict())
+            self.assertEqual(store.links_missing(store.link_urls(bms)), ["https://f.example"])   # errors are retried
+            got = store.all()
+            store.attach_links(got)
+            by = {b.id: b for b in got}
+            self.assertEqual(by["1"].link_info[0]["title"], "acme/skill")
+            md = report.to_markdown([by["1"], by["5"]], {"date": "d", "total": 2})
+            self.assertIn("- **acme/skill** — Does X. <https://example.com/a>", md)
+            self.assertIn("GitHub: 12 stars · Python · last push 3 days ago · MIT", md)
+            self.assertIn("Signals: Claude Code skill (SKILL.md)", md)
+            self.assertIn("README: # Skill hello", md)
+            self.assertIn("could not fetch (HTTP 500)", md)
+            html_out = report.to_html([by["1"]], {"date": "d", "total": 1})
+            self.assertIn("Signals: Claude Code skill", html_out)
+            self.assertIn(">acme/skill</a>", html_out)
+            rows = json.loads(json.dumps([b.to_row() for b in got]))
+            self.assertEqual(rows[0]["id"], "1")
+            self.assertEqual(rows[0]["link_info"][0]["signals"], ["Claude Code skill (SKILL.md)"])

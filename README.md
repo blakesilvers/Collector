@@ -149,7 +149,24 @@ python -m xbookmarks export          # everything as JSON
 ```
 
 Reports land in `reports/bookmarks_YYYY-MM-DD.{md,html,json}`. Each run stops once it
-reaches posts already stored, so a daily run only loads a page or two. The store is
+reaches posts already stored, so a daily run only loads a page or two.
+
+### What is behind the links
+
+Most useful bookmarks point somewhere else, so each run also follows the links in new
+posts (`[links]` in the config, or `--no-links` to skip) and records what it finds:
+
+* any page: title, description, site name;
+* GitHub repositories: description, stars, language, license, last push, archived flag,
+  a README excerpt, and signals for an AI-tooling workflow: **Claude Code skill**
+  (`SKILL.md`, also inside `tree/<branch>/<folder>` links), **Claude Code plugin**
+  (`.claude-plugin/`), **MCP config** (`.mcp.json`), and mentions of MCP or Claude Code in
+  the description or README. Dead or private repos are reported as not found.
+
+GitHub's API allows 60 anonymous lookups an hour; set `GITHUB_TOKEN` for 5,000. Without
+the API the README and signals still come from raw files. Links that were not described
+(limit reached, network down) are picked up by the next run or by
+`python -m xbookmarks enrich`, which also backfills links for everything already stored. The store is
 `data/xbookmarks/bookmarks.sqlite` and keeps the full text, links, media, quoted post,
 engagement counts and (by default) X's raw JSON for every bookmark.
 

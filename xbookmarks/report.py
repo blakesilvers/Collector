@@ -15,7 +15,7 @@ h1{font-size:1.5rem}.meta{color:#666;font-size:.9rem;margin-bottom:1.5rem}
 .card{border:1px solid #ddd;border-radius:10px;padding:.9rem 1.1rem;margin:.9rem 0}
 .who{font-weight:600}.who span{font-weight:400;color:#666}.date{color:#888;font-size:.85rem;float:right}
 .text{white-space:pre-wrap;margin:.5rem 0}.q{border-left:3px solid #ccc;padding-left:.7rem;color:#444;margin:.5rem 0;white-space:pre-wrap}
-.links a{display:block;font-size:.9rem;word-break:break-all}.media{color:#666;font-size:.85rem}
+.links a{display:block;font-size:.9rem;word-break:break-all}.link{margin:.35rem 0}.sub{font-size:.85rem;color:#555}.media{color:#666;font-size:.85rem}
 .open{font-size:.85rem}.num{color:#888;font-size:.8rem}.empty{color:#666}
 @media(prefers-color-scheme:dark){body{background:#111;color:#eee}.card{border-color:#333}.q{color:#bbb}.date,.num,.meta,.media{color:#999}}
 """
@@ -35,6 +35,46 @@ def _media_summary(b: Bookmark) -> str:
     for m in b.media:
         kinds[m.get("type", "media")] = kinds.get(m.get("type", "media"), 0) + 1
     return ", ".join(f"{n} {k}{'s' if n > 1 else ''}" for k, n in kinds.items())
+
+
+def _gh_line(gh: dict) -> str:
+    bits = []
+    if gh.get("stars") is not None:
+        bits.append(f"{gh['stars']:,} stars")
+    if gh.get("language"):
+        bits.append(gh["language"])
+    if gh.get("days_since_push") is not None:
+        d = gh["days_since_push"]
+        bits.append("pushed today" if d == 0 else f"last push {d} day{'s' if d != 1 else ''} ago")
+    if gh.get("license"):
+        bits.append(gh["license"])
+    if gh.get("archived"):
+        bits.append("ARCHIVED")
+    return " · ".join(bits)
+
+
+def _link_lines_md(info: dict) -> list[str]:
+    kind = info.get("kind")
+    if kind in ("skipped", None):
+        return []
+    url = info.get("url", "")
+    if kind == "error" or info.get("error"):
+        return [f"- <{url}> — could not fetch ({info.get('error', 'error')})"]
+    head = info.get("title") or url
+    desc = info.get("description", "")
+    line = f"- **{head}**" + (f" — {desc}" if desc else "") + f" <{url}>"
+    out = [line]
+    gh = info.get("github") or {}
+    if gh:
+        ghl = _gh_line(gh)
+        if ghl:
+            out.append(f"  GitHub: {ghl}")
+    if info.get("signals"):
+        out.append("  Signals: " + "; ".join(info["signals"]))
+    if info.get("readme_excerpt"):
+        excerpt = " ".join(info["readme_excerpt"].split())[:500]
+        out.append(f"  README: {excerpt}")
+    return out
 
 
 def to_markdown(bookmarks: list[Bookmark], meta: dict) -> str:
@@ -58,7 +98,12 @@ def to_markdown(bookmarks: list[Bookmark], meta: dict) -> str:
                        + (f" <{b.quoted.get('url')}>" if b.quoted.get("url") else ""))
         if b.links:
             out.append("")
-            out.append("Links: " + " ".join(f"<{u}>" for u in b.links))
+            described = {i.get("url") for i in b.link_info}
+            plain = [u for u in b.links if u not in described]
+            if plain:
+                out.append("Links: " + " ".join(f"<{u}>" for u in plain))
+            for info in b.link_info:
+                out.extend(_link_lines_md(info))
         ms = _media_summary(b)
         if ms:
             out.append(f"Media: {ms}")
@@ -80,8 +125,26 @@ def _card(i: int, b: Bookmark) -> str:
         parts.append(f'<div class="q">@{html.escape(b.quoted.get("author_handle", ""))}: '
                      f'{html.escape(b.quoted.get("text") or "")}</div>')
     if b.links:
-        parts.append('<div class="links">' + "".join(
-            f'<a href="{html.escape(u)}" target="_blank" rel="noopener">{html.escape(u)}</a>' for u in b.links) + "</div>")
+        described = {i.get("url"): i for i in b.link_info}
+        items = []
+        for u in b.links:
+            info = described.get(u)
+            a = f'<a href="{html.escape(u)}" target="_blank" rel="noopener">{html.escape((info or {}).get("title") or u)}</a>'
+            if not info or info.get("kind") == "skipped":
+                items.append(f"<div>{a}</div>")
+                continue
+            extra = []
+            if info.get("description"):
+                extra.append(html.escape(info["description"]))
+            gh = info.get("github") or {}
+            if gh and _gh_line(gh):
+                extra.append("<span class='media'>GitHub: " + html.escape(_gh_line(gh)) + "</span>")
+            if info.get("signals"):
+                extra.append("<span class='media'>Signals: " + html.escape("; ".join(info["signals"])) + "</span>")
+            if info.get("error"):
+                extra.append("<span class='media'>could not fetch: " + html.escape(info["error"]) + "</span>")
+            items.append(f"<div class='link'>{a}<div class='sub'>" + "<br>".join(extra) + "</div></div>")
+        parts.append('<div class="links">' + "".join(items) + "</div>")
     ms = _media_summary(b)
     if ms:
         parts.append(f'<div class="media">Media: {html.escape(ms)}</div>')

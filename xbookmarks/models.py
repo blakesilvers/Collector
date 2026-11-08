@@ -19,6 +19,7 @@ class Bookmark:
     reply_to: str = ""                   # handle the post replies to, if any
     metrics: dict = field(default_factory=dict)
     position: int = 0                    # 0 = most recently bookmarked in this capture
+    link_info: list[dict] = field(default_factory=list)   # enrich.LinkInfo.to_dict() per link
     raw: dict | None = None
     is_new: bool = False
     first_seen: str = ""
