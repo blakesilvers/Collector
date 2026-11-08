@@ -137,10 +137,23 @@ python -m xbookmarks login       # a browser window opens; log in to X; it close
 The session is saved in `data/xbookmarks/profile/` (git-ignored, treat it like a password).
 
 No screen to log in on (a server, a cloud session)? Copy two cookies from a browser where
-you are logged in to X (DevTools > Application > Cookies > https://x.com) into the
-environment variables `X_AUTH_TOKEN` (the `auth_token` cookie) and `X_CT0` (the `ct0`
-cookie). The collector loads them into its browser profile at startup. `auth_token` is
-equivalent to your password: store it only where you would store one.
+you are logged in to X (DevTools > Application > Cookies > https://x.com): `auth_token` and
+`ct0`. Put them in a file named `.env` in the repository root (copy `.env.example`; the file
+is git-ignored), or export them as the environment variables `X_AUTH_TOKEN` and `X_CT0`.
+Variables already set in the shell win over the file. The collector loads them into its
+browser profile at startup. `auth_token` is equivalent to your password: store it only
+where you would store one, and never paste it into a chat.
+
+```bash
+cp .env.example .env              # then fill in the two values
+python -m xbookmarks session       # where the next run will log in from (never prints values)
+python -m xbookmarks session --check   # also asks X whether the session still works
+```
+
+When a run says "not logged in" or "redirected to its login page", the cookies have
+expired: copy fresh ones into `.env` (both from the same browser session) and re-run
+`session --check`. In Claude Code, the `x-session-refresh` skill in `.claude/skills/`
+walks through this.
 To use your installed Chrome or Edge instead of Playwright's Chromium, set
 `channel = "chrome"` (or `"msedge"`) under `[browser]` in `xbookmarks.toml`.
 
@@ -152,6 +165,7 @@ python -m xbookmarks run --all       # once: walk your whole bookmark history
 python -m xbookmarks report --days 7 # rebuild a report for the last week, no browser
 python -m xbookmarks search "topic"  # grep the store
 python -m xbookmarks export          # everything as JSON
+python -m xbookmarks session --check # is the saved X session still accepted?
 ```
 
 Reports land in `reports/bookmarks_YYYY-MM-DD.{md,html,json}`. Each run stops once it

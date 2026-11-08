@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import browser, enrich, report
-from .config import load
+from .config import ENV_FILE, load, load_env
 from .store import Store
 
 
@@ -23,6 +24,43 @@ def cmd_login(args, cfg) -> int:
     ok = browser.login(_profile(cfg), channel=cfg["browser"]["channel"],
                        executable_path=cfg["browser"]["executable_path"])
     return 0 if ok else 1
+
+
+def cmd_session(args, cfg) -> int:
+    """Say where the X session comes from and, with --check, whether X still accepts it.
+
+    Prints names and sources only, never cookie values.
+    """
+    profile = _profile(cfg)
+    present = [name for name in browser.COOKIE_ENV if os.environ.get(name, "").strip()]
+    missing = [name for name in browser.COOKIE_ENV if name not in present]
+    source = browser.cookie_source(profile)
+    print(f"env file: {ENV_FILE.resolve()} ({'found' if ENV_FILE.exists() else 'not found'})")
+    print(f"variables set: {', '.join(present) or 'none'}" + (f"  (missing: {', '.join(missing)})" if missing else ""))
+    print(f"saved browser profile: {profile} ({'present' if source != 'none' or profile.exists() else 'absent'})")
+    print(f"next run logs in from: {source}")
+    if not args.check:
+        if source == "none":
+            print("No session. Fill in X_AUTH_TOKEN and X_CT0 in the env file, or run: python -m xbookmarks login")
+            return 2
+        return 0
+    try:
+        status, detail = browser.check_session(profile, channel=cfg["browser"]["channel"],
+                                               executable_path=cfg["browser"]["executable_path"])
+    except Exception as e:  # noqa: BLE001
+        print(f"check: error ({type(e).__name__}: {e})", file=sys.stderr)
+        return 1
+    print(f"check: {status} ({detail})")
+    if status == "ok":
+        return 0
+    if status in ("expired", "no_cookies"):
+        print("Refresh the session: copy fresh auth_token and ct0 cookies from a logged-in browser into "
+              f"{ENV_FILE} (see .env.example), or run: python -m xbookmarks login")
+        return 2
+    if status == "blocked":
+        print("Run the collector from a machine X accepts (your own computer); the cookies are not the problem.")
+        return 3
+    return 1
 
 
 def _enrich(store: Store, bookmarks, cfg, limit: int | None = None) -> int:
@@ -158,13 +196,16 @@ def build_parser() -> argparse.ArgumentParser:
     e = sub.add_parser("export", help="dump every stored bookmark to JSON")
     e.add_argument("--out")
     e.set_defaults(fn=cmd_export)
+    se = sub.add_parser("session", help="show where the X session comes from; --check asks X whether it still works")
+    se.add_argument("--check", action="store_true", help="open the bookmarks page headlessly to verify the session")
+    se.set_defaults(fn=cmd_session)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
-    subcommands = {"login", "run", "report", "search", "export", "enrich"}
+    subcommands = {"login", "run", "report", "search", "export", "enrich", "session"}
     if not (subcommands & set(argv)) and not ({"-h", "--help"} & set(argv)):
         i = 0                   # no subcommand given: behave as `run`, keeping global options first
         while i < len(argv):
@@ -176,5 +217,6 @@ def main(argv: list[str] | None = None) -> int:
                 break
         argv = argv[:i] + ["run"] + argv[i:]
     args = parser.parse_args(argv)
+    load_env()
     cfg = load(args.config)
     return args.fn(args, cfg)

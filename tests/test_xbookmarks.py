@@ -505,3 +505,88 @@ class EnrichTests(unittest.TestCase):
             rows = json.loads(json.dumps([b.to_row() for b in got]))
             self.assertEqual(rows[0]["id"], "1")
             self.assertEqual(rows[0]["link_info"][0]["signals"], ["Claude Code skill (SKILL.md)"])
+
+
+class EnvFileTests(unittest.TestCase):
+    def test_parse_env_handles_comments_quotes_and_export(self):
+        from xbookmarks.config import parse_env
+        text = ('# comment\n\nexport X_AUTH_TOKEN="abc123"\n'
+                "X_CT0='def456'\nPLAIN=value # trailing comment\nBAD LINE\n=novalue\n")
+        self.assertEqual(parse_env(text),
+                         {"X_AUTH_TOKEN": "abc123", "X_CT0": "def456", "PLAIN": "value"})
+
+    def test_load_env_does_not_override_existing_variables(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        from xbookmarks.config import load_env
+        with tempfile.TemporaryDirectory() as d:
+            env_file = Path(d) / ".env"
+            env_file.write_text("XB_TEST_A=from_file\nXB_TEST_B=from_file\n")
+            os.environ["XB_TEST_A"] = "from_shell"
+            os.environ.pop("XB_TEST_B", None)
+            try:
+                names = load_env(env_file)
+                self.assertEqual(names, ["XB_TEST_B"])
+                self.assertEqual(os.environ["XB_TEST_A"], "from_shell")
+                self.assertEqual(os.environ["XB_TEST_B"], "from_file")
+            finally:
+                os.environ.pop("XB_TEST_A", None)
+                os.environ.pop("XB_TEST_B", None)
+
+    def test_load_env_missing_file_is_noop(self):
+        from pathlib import Path
+        from xbookmarks.config import load_env
+        self.assertEqual(load_env(Path("/nonexistent/.env")), [])
+
+
+class SessionCommandTests(unittest.TestCase):
+    def test_session_never_prints_cookie_values(self):
+        import io
+        import os
+        import tempfile
+        from contextlib import redirect_stdout
+        from pathlib import Path
+        from xbookmarks import cli
+        secret = "supersecrettokenvalue0123456789abcdef"
+        with tempfile.TemporaryDirectory() as d:
+            cwd = os.getcwd()
+            os.chdir(d)
+            os.environ["X_AUTH_TOKEN"] = secret
+            os.environ.pop("X_CT0", None)
+            try:
+                Path("xbookmarks.local.toml").write_text('[paths]\ndata_dir = "data"\n')
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = cli.main(["session"])
+                out = buf.getvalue()
+            finally:
+                os.environ.pop("X_AUTH_TOKEN", None)
+                os.chdir(cwd)
+        self.assertEqual(rc, 0)
+        self.assertNotIn(secret, out)
+        self.assertIn("X_AUTH_TOKEN", out)
+        self.assertIn("missing: X_CT0", out)
+        self.assertIn("next run logs in from: env", out)
+
+    def test_session_without_any_source_exits_2(self):
+        import io
+        import os
+        import tempfile
+        from contextlib import redirect_stdout
+        from pathlib import Path
+        from xbookmarks import cli
+        with tempfile.TemporaryDirectory() as d:
+            cwd = os.getcwd()
+            os.chdir(d)
+            saved = {k: os.environ.pop(k, None) for k in ("X_AUTH_TOKEN", "X_CT0")}
+            try:
+                Path("xbookmarks.local.toml").write_text('[paths]\ndata_dir = "data"\n')
+                with redirect_stdout(io.StringIO()):
+                    rc = cli.main(["session"])
+            finally:
+                for k, v in saved.items():
+                    if v is not None:
+                        os.environ[k] = v
+                os.chdir(cwd)
+        self.assertEqual(rc, 2)

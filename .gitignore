@@ -7,3 +7,4 @@ config.local.toml
 .venv/
 data/xbookmarks/
 xbookmarks.local.toml
+.env

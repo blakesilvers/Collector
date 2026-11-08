@@ -125,6 +125,63 @@ def login(profile_dir: Path, *, base_url: str = "https://x.com", channel: str = 
         return ok
 
 
+def cookie_source(profile_dir: Path) -> str:
+    """Where the next run will get its X session from, without touching the browser.
+
+    ``"env"`` when X_AUTH_TOKEN is set (the file or variable wins over the saved profile),
+    ``"profile"`` when a saved browser profile exists, ``"none"`` otherwise. Never returns a value.
+    """
+    if os.environ.get(COOKIE_ENV[0], "").strip():
+        return "env"
+    if (profile_dir / "Default" / "Cookies").exists() or (profile_dir / "Cookies").exists():
+        return "profile"
+    return "none"
+
+
+def check_session(profile_dir: Path, *, base_url: str = "https://x.com", channel: str = "",
+                  executable_path: str = "", timeout_ms: int = 45000) -> tuple[str, str]:
+    """Open the bookmarks page headlessly and report whether X accepts the session.
+
+    Returns ``(status, detail)`` where status is ``"ok"`` (a Bookmarks response arrived),
+    ``"no_cookies"`` (nothing to log in with), ``"expired"`` (X redirected to its login page),
+    ``"blocked"`` (X refused the page itself with an HTTP error, independent of cookies),
+    ``"error"`` (navigation failed for another reason) or ``"unknown"`` (nothing conclusive
+    before the timeout). Cookie values are never returned.
+    """
+    responses: list = []
+    with _playwright()() as p:
+        context = _launch(p, profile_dir, headless=True, channel=channel, executable_path=executable_path)
+        try:
+            _inject_env_cookies(context, base_url)
+            if not _logged_in(context, base_url):
+                return "no_cookies", f"no auth_token in the profile and {COOKIE_ENV[0]} is not set"
+            page = context.pages[0] if context.pages else context.new_page()
+            page.on("response", lambda r: responses.append(r) if is_bookmarks_request(r.url) else None)
+            documents: list = []
+            page.on("response", lambda r: documents.append(r) if r.request.resource_type == "document" else None)
+            try:
+                page.goto(f"{base_url}{BOOKMARKS_PATH}", wait_until="domcontentloaded", timeout=timeout_ms)
+            except Exception as e:  # noqa: BLE001
+                codes = [d.status for d in documents if d.status >= 400]
+                if codes:
+                    return "blocked", (f"X answered the page request with HTTP {codes[-1]} before any login check; "
+                                       "this machine or browser is being refused, so fresh cookies will not help here")
+                return "error", str(e).splitlines()[0]
+            deadline = time.time() + timeout_ms / 1000
+            while time.time() < deadline:
+                if any(m in page.url for m in LOGIN_MARKERS):
+                    return "expired", "X redirected to its login page"
+                for resp in responses:
+                    if resp.status == 200:
+                        return "ok", "X served the bookmarks timeline"
+                    if resp.status in (401, 403):
+                        return "expired", f"X answered the bookmarks request with HTTP {resp.status}"
+                page.wait_for_timeout(500)
+            return "unknown", "no bookmarks response and no login redirect before the timeout"
+        finally:
+            context.close()
+
+
 def _api_info(request) -> dict:
     parts = urlsplit(request.url)
     qs = parse_qs(parts.query)
