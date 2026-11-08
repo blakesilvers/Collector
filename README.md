@@ -111,3 +111,107 @@ Each run updates `data/rfps.sqlite`, so the report marks only first-time bids as
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+---
+
+# X bookmarks collector
+
+`python -m xbookmarks` collects the posts you bookmark on X (Twitter) and writes a daily
+report of the ones it has not seen before. It costs nothing: it does not use the X API
+(which no longer has a free tier). Instead a real browser, logged in as you, opens
+`x.com/i/bookmarks` and the data X's own page loads is captured. That is the same route
+the free bookmark-export browser extensions take. X's terms of service frown on automated
+access, so keep it to one gentle run a day on your own account.
+
+Because the page makes the requests, nothing here depends on X's internal query IDs,
+feature flags or request-signing headers, which change often.
+
+## Setup (once)
+
+```bash
+pip install playwright
+playwright install chromium
+python -m xbookmarks login       # a browser window opens; log in to X; it closes itself
+```
+
+The session is saved in `data/xbookmarks/profile/` (git-ignored, treat it like a password).
+
+No screen to log in on (a server, a cloud session)? Copy two cookies from a browser where
+you are logged in to X (DevTools > Application > Cookies > https://x.com): `auth_token` and
+`ct0`. Put them in a file named `.env` in the repository root (copy `.env.example`; the file
+is git-ignored), or export them as the environment variables `X_AUTH_TOKEN` and `X_CT0`.
+Variables already set in the shell win over the file. The collector loads them into its
+browser profile at startup. `auth_token` is equivalent to your password: store it only
+where you would store one, and never paste it into a chat.
+
+```bash
+cp .env.example .env              # then fill in the two values
+python -m xbookmarks session       # where the next run will log in from (never prints values)
+python -m xbookmarks session --check   # also asks X whether the session still works
+```
+
+When a run says "not logged in" or "redirected to its login page", the cookies have
+expired: copy fresh ones into `.env` (both from the same browser session) and re-run
+`session --check`. In Claude Code, the `x-session-refresh` skill in `.claude/skills/`
+walks through this.
+To use your installed Chrome or Edge instead of Playwright's Chromium, set
+`channel = "chrome"` (or `"msedge"`) under `[browser]` in `xbookmarks.toml`.
+
+## Every day
+
+```bash
+python -m xbookmarks                 # fetch new bookmarks, store them, write today's report
+python -m xbookmarks run --all       # once: walk your whole bookmark history
+python -m xbookmarks report --days 7 # rebuild a report for the last week, no browser
+python -m xbookmarks search "topic"  # grep the store
+python -m xbookmarks export          # everything as JSON
+python -m xbookmarks session --check # is the saved X session still accepted?
+```
+
+Reports land in `reports/bookmarks_YYYY-MM-DD.{md,html,json}`. Each run stops once it
+reaches posts already stored, so a daily run only loads a page or two.
+
+### What is behind the links
+
+Most useful bookmarks point somewhere else, so each run also follows the links in new
+posts (`[links]` in the config, or `--no-links` to skip) and records what it finds:
+
+* any page: title, description, site name;
+* GitHub repositories: description, stars, language, license, last push, archived flag,
+  a README excerpt, and signals for an AI-tooling workflow: **Claude Code skill**
+  (`SKILL.md`, also inside `tree/<branch>/<folder>` links), **Claude Code plugin**
+  (`.claude-plugin/`), **MCP config** (`.mcp.json`), and mentions of MCP or Claude Code in
+  the description or README. Dead or private repos are reported as not found.
+
+GitHub's API allows 60 anonymous lookups an hour; set `GITHUB_TOKEN` for 5,000. Without
+the API the README and signals still come from raw files. Links that were not described
+(limit reached, network down) are picked up by the next run or by
+`python -m xbookmarks enrich`, which also backfills links for everything already stored. The store is
+`data/xbookmarks/bookmarks.sqlite` and keeps the full text, links, media, quoted post,
+engagement counts and (by default) X's raw JSON for every bookmark.
+
+Scheduling on Windows (runs headless at 05:30; the window never shows):
+
+```powershell
+.\scripts\install_xbookmarks_task.ps1 -At 05:30
+```
+
+macOS/Linux cron: `30 5 * * * cd /path/to/Collector && python3 -m xbookmarks`
+
+## Emailing the report to yourself (optional, needed for the morning digest)
+
+Set `enabled = true`, `username` and `to` under `[email]` in `xbookmarks.toml` (or a
+git-ignored `xbookmarks.local.toml`). For Gmail, create an App Password at
+myaccount.google.com/apppasswords (2-Step Verification must be on) and put it in the
+`XBOOKMARKS_SMTP_PASSWORD` environment variable. Each day with new bookmarks you then get
+an email titled `X bookmarks report YYYY-MM-DD (N new)` with the report in the body and the
+JSON attached. An assistant with access to that mailbox can turn it into a morning digest.
+
+## Troubleshooting
+
+* **"No X session"** or **"X redirected to its login page"**: run `python -m xbookmarks login` again.
+* **"loaded no bookmark data in time"**: run `python -m xbookmarks run --headed` to watch
+  what X shows. If X is presenting a challenge page to the headless browser, set
+  `headless = false` or `channel = "chrome"` in the config.
+* `data/xbookmarks/last_request.json` records the query ID and parameters X's page used in
+  the last run, which helps when diagnosing a change on X's side.
