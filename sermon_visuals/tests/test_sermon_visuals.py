@@ -854,24 +854,58 @@ def test_plan_gate_records_the_real_cost(workspace: Path, monkeypatch, capsys):
     assert "estimate" in capsys.readouterr().out
 
 
-def test_plan_gate_yes_skips_prompt_and_unknown_cost_uses_estimate(workspace: Path, monkeypatch):
+def _ceiling(cfg, reference: str | None = None) -> float:
+    """The gate's upper bound for this test program: before the transcript is read, or for a given one."""
+    from sermon_visuals.studio import plan
+    from sermon_visuals.studio.levels import layers_for
+    sents = plan.sentences_from_words(_studio_words())
+    return round(plan.storyboard_ceiling(cfg, sents, layers_for(3, cfg.studio.layers), cfg.studio.direction, reference), 4)
+
+
+def test_plan_gate_yes_skips_prompt_and_unknown_cost_counts_the_ceiling(workspace: Path, monkeypatch):
     cfg, run, calls, work = _gated_studio(workspace, monkeypatch, cost=None)
     run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), plan_only=True, assume_yes=True, confirm=_no_prompt)
     assert calls == ["transcript", "storyboard"]
-    assert json.loads((work / "spend.json").read_text(encoding="utf-8"))["usd"] == 0.06
+    reference = (workspace / "programs" / "btw-0001.txt").read_text(encoding="utf-8")
+    assert json.loads((work / "spend.json").read_text(encoding="utf-8"))["usd"] == _ceiling(cfg, reference)
+
+
+def test_storyboard_ceiling_bounds_the_request(workspace: Path):
+    from sermon_visuals.studio import plan
+    from sermon_visuals.studio.levels import layers_for
+    cfg = load_config(workspace / "config.toml")
+    st, sents, layers = cfg.studio, plan.sentences_from_words(_studio_words()), layers_for(3, {})
+    long_ref = "word " * 60_000  # a long reference transcript, beyond the allowance made before it is read
+    request = plan.SYSTEM + plan._request(cfg, sents, long_ref, layers, "")
+    # independent bound: every character a token, at the dearest input rate, plus a full-length reply
+    worst = (len(request) * st.claude_cache_write_usd_per_mtok + plan.MAX_TOKENS * st.claude_output_usd_per_mtok) / 1e6
+    assert plan.storyboard_ceiling(cfg, sents, layers, "", long_ref) >= worst / 2  # 2 characters a token
+    assert plan.storyboard_ceiling(cfg, sents, layers, "", None) >= plan.storyboard_ceiling(cfg, sents, layers, "", "x" * 50_000)
 
 
 def test_plan_gate_refuses_when_full_length_reply_would_overrun(workspace: Path, monkeypatch):
-    from sermon_visuals.studio import plan
     cfg, run, calls, work = _gated_studio(workspace, monkeypatch)
-    ceiling = plan.storyboard_ceiling(cfg.studio, plan.sentences_from_words(_studio_words()))
-    assert ceiling >= plan.MAX_TOKENS * cfg.studio.claude_output_usd_per_mtok / 1e6  # the reply alone can cost this much
+    ceiling = _ceiling(cfg)
     work.mkdir(parents=True, exist_ok=True)
     left = (0.06 + ceiling) / 2  # more than the estimate, less than the most the call could cost
     (work / "spend.json").write_text(json.dumps({"usd": cfg.studio.budget_usd - left}), encoding="utf-8")
     with pytest.raises(RuntimeError) as info:
         run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), assume_yes=True, confirm=_no_prompt)
     assert "Nothing was spent" in str(info.value) and calls == []
+
+
+def test_plan_gate_rechecks_after_reading_a_long_transcript(workspace: Path, monkeypatch):
+    cfg, run, calls, work = _gated_studio(workspace, monkeypatch)
+    long_ref = workspace / "programs" / "long.txt"
+    long_ref.write_text("word " * 200_000, encoding="utf-8")
+    monkeypatch.setattr(run, "get_transcript", lambda *a, **k: calls.append("transcript") or long_ref)
+    before, after = _ceiling(cfg), _ceiling(cfg, long_ref.read_text(encoding="utf-8"))
+    assert after > before
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "spend.json").write_text(json.dumps({"usd": cfg.studio.budget_usd - (before + after) / 2}), encoding="utf-8")
+    with pytest.raises(RuntimeError) as info:
+        run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), assume_yes=True, confirm=_no_prompt)
+    assert "budget" in str(info.value) and calls == ["transcript"]  # read the transcript, never called Claude
 
 
 @pytest.mark.parametrize("usd,expect", [(None, "ceiling"), (0.8123, 0.8123)])
@@ -881,7 +915,7 @@ def test_plan_gate_failed_paid_call_is_still_counted(workspace: Path, monkeypatc
     with pytest.raises(plan.StoryboardFailed):
         run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), assume_yes=True, confirm=_no_prompt)
     if expect == "ceiling":  # cost unknown (a cut-off reply may have run to full length): count the most it could have been
-        expect = round(plan.storyboard_ceiling(cfg.studio, plan.sentences_from_words(_studio_words())), 4)
+        expect = _ceiling(cfg, (workspace / "programs" / "btw-0001.txt").read_text(encoding="utf-8"))
     assert json.loads((work / "spend.json").read_text(encoding="utf-8"))["usd"] == expect
 
 

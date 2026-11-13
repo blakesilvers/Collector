@@ -135,14 +135,18 @@ def run_studio(
     elif board is None:
         # The storyboard is a paid Claude call: price it, check the budget and ask before anything is sent.
         plan_usd = plan.storyboard_estimate(st, length) if plan_estimate is None else plan_estimate
-        most = max(plan_usd, plan.storyboard_ceiling(st, sentences))
         left = budget - ledger.data["usd"]
-        if most > left:
-            raise RuntimeError(
+
+        def over_budget(most: float) -> RuntimeError:
+            return RuntimeError(
                 f"Making the plan should cost about ${plan_usd:.2f} but could cost up to ${most:.2f} if Claude's reply runs "
                 f"to full length, and only ${max(left, 0.0):.2f} is left of the ${budget:.2f} budget for this stretch "
-                f"(${st.budget_usd:.0f} per full program, pro-rated). Nothing was spent. If you mean to spend more, "
+                f"(${st.budget_usd:.0f} per full program, pro-rated). Nothing was spent on the plan. If you mean to spend more, "
                 "raise budget_usd under [studio] in config.toml and run the same command again.")
+
+        most = max(plan_usd, plan.storyboard_ceiling(cfg, sentences, layers, st.direction))
+        if most > left:
+            raise over_budget(most)
         print(f"  The plan (storyboard) is made by Claude. Estimated cost: about ${plan_usd:.2f} (at most ${most:.2f}). "
               "This is an estimate; the exact figure is on your Anthropic bill.")
         if not assume_yes and confirm(f"  Spend about ${plan_usd:.2f} on the plan? [y/N] ").strip().lower() not in ("y", "yes"):
@@ -152,6 +156,9 @@ def run_studio(
             reference = get_transcript(cfg, stem, audio, cfg.paths.output_dir / stem).read_text(encoding="utf-8")
         except Exception:
             reference = ""
+        most = max(plan_usd, plan.storyboard_ceiling(cfg, sentences, layers, st.direction, reference))
+        if most > left:  # the transcript turned out longer than allowed for; check again before sending it
+            raise over_budget(most)
         try:
             board, actual = plan.make_storyboard(cfg, sentences, reference, layers, st.direction)
         except plan.StoryboardFailed as exc:
@@ -163,9 +170,10 @@ def run_studio(
                     print(f"  The failed attempt was counted as ${most:.2f}, the most it could have cost, "
                           "so the budget stays on the safe side. Your Anthropic bill shows the exact figure.")
             raise
-        if actual is None:
-            ledger.add(plan_usd, storyboards=1)
-            print(f"  Plan made. Counted as ${plan_usd:.2f} (the estimate; Claude did not report token counts).")
+        if actual is None:  # no token counts: count the most it could have cost, so the budget stays safe
+            ledger.add(round(most, 4), storyboards=1)
+            print(f"  Plan made. Counted as ${most:.2f}, the most it could have cost, because Claude did not report "
+                  "token counts. Your Anthropic bill shows the exact figure.")
         else:
             ledger.add(round(actual, 4), storyboards=1)
             print(f"  Plan made. Cost: ${actual:.2f}, worked out from the token counts Claude reported.")

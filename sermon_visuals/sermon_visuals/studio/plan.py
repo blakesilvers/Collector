@@ -250,13 +250,20 @@ def storyboard_estimate(st, seconds: float) -> float:
 MAX_TOKENS = 64000  # the longest storyboard reply Claude may write (and be paid for)
 
 
-def storyboard_ceiling(st, sentences: list[Sentence]) -> float:
-    """The most one storyboard call could cost: a generous guess at the input (the system prompt, the timed
-    sentences and a reference transcript of about the same length, at 3 characters a token) plus a reply that
-    runs all the way to MAX_TOKENS. Used so the budget cap holds even when the estimate is too low."""
-    text = sum(len(s.text) + 20 for s in sentences)
-    input_tokens = (len(SYSTEM) + 2000 + 2 * text) / 3
-    return (input_tokens * st.claude_input_usd_per_mtok + MAX_TOKENS * st.claude_output_usd_per_mtok) / 1e6
+REFERENCE_ALLOWANCE = 120_000  # characters allowed for the reference transcript before it is read (a half hour is ~30,000)
+
+
+def storyboard_ceiling(cfg: Config, sentences: list[Sentence], layers: Layers, direction: str = "",
+                       reference: str | None = None) -> float:
+    """The most one storyboard call could cost, so the budget cap holds even when the estimate is low: the
+    exact request text (with REFERENCE_ALLOWANCE characters standing in for a transcript not yet read) counted
+    at 2 characters a token and priced at the dearest input rate, plus a reply that runs all the way to MAX_TOKENS."""
+    st = cfg.studio
+    chars = len(SYSTEM) + len(_request(cfg, sentences, reference or "", layers, direction))
+    if reference is None:
+        chars += REFERENCE_ALLOWANCE
+    input_rate = max(st.claude_input_usd_per_mtok, st.claude_cache_write_usd_per_mtok)
+    return (chars / 2 * input_rate + MAX_TOKENS * st.claude_output_usd_per_mtok) / 1e6
 
 
 def storyboard_cost(usage, st) -> float | None:
