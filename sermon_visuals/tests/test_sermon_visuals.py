@@ -1311,3 +1311,18 @@ def test_scene_lint_warns_before_the_picture_question(workspace: Path, monkeypat
                    confirm=lambda q: seen.append(capsys.readouterr().out) or "n")
     assert len(seen) == 1 and "Beat 2: scroll, script" in seen[0] and "Beat 1" not in seen[0]
     assert provider.calls == []  # a warning, not a block: the question is still asked and "n" stops it
+
+
+def test_picture_progress_counts_against_the_real_total(workspace: Path, caplog):
+    import logging
+
+    from sermon_visuals import imagegen
+    from sermon_visuals.studio import assets, plan
+    cfg = load_config(workspace / "config.toml")
+    beats = [plan.Beat(first=i, last=i, scene=f"scene {i}", motion="m", hero=False, key_phrase="") for i in range(5)]
+    shots = [assets.Shot(index=i, start=i * 5.0, end=(i + 1) * 5.0, beat=b) for i, b in enumerate(beats)]
+    assets.assign_paths(shots, workspace / "a", "style", imagegen.content_guard(cfg), "m")
+    with caplog.at_level(logging.INFO, logger=assets.log.name):
+        assets.generate_assets(cfg, shots, "style", assets.DraftArt(), None, assets.Ledger(workspace / "spend.json"), 0.1, 0.07, workers=1)
+    done = [m for m in caplog.messages if m.startswith("Picture ")]
+    assert done == [f"Picture {k}/5 done" for k in range(1, 6)]

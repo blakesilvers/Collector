@@ -281,6 +281,7 @@ def generate_assets(
         if s.image and not s.image.exists():
             todo.setdefault(s.image, s)
     pending = list(todo.values())
+    total = len(pending)  # taken now: the style anchors are popped off `pending` below
     base_refs = list(cfg.illustrate.reference_images) + list(cfg.style.reference_images)
     guard = content_guard(cfg)
 
@@ -293,7 +294,7 @@ def generate_assets(
             ledger.add(image_usd, images=1)
             with lock:
                 report.images_made += 1
-            log.info("Picture %d/%d done", report.images_made, len(pending))
+            log.info("Picture %d/%d done", report.images_made, total)
         except Exception as exc:
             log.warning("Picture for shot %d failed (%s); the previous picture will be held", s.index + 1, exc)
             with lock:
