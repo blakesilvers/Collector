@@ -213,16 +213,27 @@ class Ledger:
             self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
 
 
-def _retry(fn, attempts: int = 3, wait: float = 4.0):
+def _retry(fn, attempts: int = 3, wait: float = 4.0, give_up=lambda exc: False):
     last: Exception | None = None
     for i in range(attempts):
         try:
             return fn()
         except Exception as exc:  # network hiccups, rate limits, an occasional empty result
             last = exc
+            if give_up(exc):
+                break
             if i + 1 < attempts:
                 time.sleep(wait * (i + 1))
     raise last  # type: ignore[misc]
+
+
+def model_missing(exc: Exception) -> bool:
+    """True for a "this model does not exist" style error, which no retry can fix. Google's Interactions API
+    raises google.genai._interactions.NotFoundError (status_code 404); older google-genai errors carry `code`."""
+    if getattr(exc, "status_code", None) == 404 or getattr(exc, "code", None) == 404:
+        return True
+    text = str(exc).lower()
+    return "model" in text and any(p in text for p in ("not found", "does not exist", "is not supported", "unknown model"))
 
 
 @dataclass
@@ -231,6 +242,7 @@ class AssetReport:
     clips_made: int = 0
     image_failures: list[int] = field(default_factory=list)
     clip_failures: list[int] = field(default_factory=list)
+    motion_stopped: str = ""  # plain-English reason animation was abandoned for the whole run, if it was
 
 
 def generate_assets(
@@ -294,18 +306,33 @@ def generate_assets(
         raise RuntimeError("animated shots were planned but no motion provider is configured")
 
     def move(s: Shot) -> None:
+        if report.motion_stopped:  # the animation model is missing; do not try (or pay for) any more clips
+            s.animate, s.clip = False, None
+            with lock:
+                report.clip_failures.append(s.index)
+            return
         try:
-            data = _retry(lambda: motion.animate(s.image, motion_prompt(s.beat, guard), s.clip_seconds), attempts=2, wait=8.0)
+            data = _retry(lambda: motion.animate(s.image, motion_prompt(s.beat, guard), s.clip_seconds), attempts=2, wait=8.0,
+                          give_up=model_missing)
             s.clip.write_bytes(data)
             ledger.add(s.clip_seconds * video_usd_per_second, clip_seconds=s.clip_seconds)
             with lock:
                 report.clips_made += 1
             log.info("Animated clip %d/%d done (%ds)", report.clips_made, len(clips), s.clip_seconds)
         except Exception as exc:
-            log.warning("Animation for shot %d failed (%s); the still picture will be used", s.index + 1, exc)
             s.animate, s.clip = False, None
             with lock:
                 report.clip_failures.append(s.index)
+                if model_missing(exc) and not report.motion_stopped:
+                    name = getattr(motion, "model", "") or "the animation model"
+                    report.motion_stopped = (
+                        f"Google could not find the animation model \"{name}\", so animation was switched off for this run "
+                        "and still pictures were used instead. Nothing was charged for animation. Check the motion_model "
+                        "line under [studio] in config.toml.")
+                    log.warning(report.motion_stopped)
+                    return
+            if not model_missing(exc):
+                log.warning("Animation for shot %d failed (%s); the still picture will be used", s.index + 1, exc)
 
     if clips:
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:

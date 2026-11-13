@@ -218,6 +218,9 @@ def run_studio(
     print(f"  Contact sheet:  {sheet}   (send this one image to Claude for feedback)")
     print(f"  Storyboard:     {board_path}   (edit a scene, run again, and only that picture is redrawn)")
     print(f"  Total spent on this clip so far: ${ledger.data['usd']:.2f}")
-    if report.image_failures or report.clip_failures:
-        print(f"  Note: {len(report.image_failures)} picture(s) and {len(report.clip_failures)} animation(s) failed and were covered by neighbours or stills. Run again to retry them.")
+    if report.motion_stopped:
+        print(f"  Note: {report.motion_stopped}")
+    clip_failures = 0 if report.motion_stopped else len(report.clip_failures)
+    if report.image_failures or clip_failures:
+        print(f"  Note: {len(report.image_failures)} picture(s) and {clip_failures} animation(s) failed and were covered by neighbours or stills. Run again to retry them.")
     return summary

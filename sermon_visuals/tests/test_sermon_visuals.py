@@ -574,6 +574,60 @@ def test_studio_sends_guards_and_cache_key_follows_them(workspace: Path, monkeyp
     assert all(s.image != a and s.clip != b for s, (a, b) in zip(shots, first))
 
 
+# ---------- animation model missing ----------
+
+def _animated_shots(workspace: Path, n: int):
+    from sermon_visuals import imagegen
+    from sermon_visuals.studio import assets, plan
+    cfg = load_config(workspace / "config.toml")
+    beats = [plan.Beat(first=i, last=i, scene=f"scene {i}", motion="m", hero=True, key_phrase="") for i in range(n)]
+    shots = [assets.Shot(index=i, start=i * 5.0, end=(i + 1) * 5.0, beat=b, animate=True, clip_seconds=5) for i, b in enumerate(beats)]
+    assets.assign_paths(shots, workspace / "a", "style", imagegen.content_guard(cfg), "omni-missing")
+    return cfg, shots
+
+
+def test_missing_animation_model_stops_animation_once(workspace: Path, monkeypatch):
+    import httpx2
+    from google.genai import _interactions as gi
+
+    from sermon_visuals.studio import assets
+    monkeypatch.setattr(assets.time, "sleep", lambda s: None)
+    cfg, shots = _animated_shots(workspace, 4)
+    req = httpx2.Request("POST", "https://generativelanguage.googleapis.com/v1beta/interactions")
+
+    class Missing:
+        model = "omni-missing"
+        calls = 0
+
+        def animate(self, image, prompt, seconds):
+            Missing.calls += 1
+            raise gi.NotFoundError("models/omni-missing is not found", response=httpx2.Response(404, request=req), body=None)
+
+    report = assets.generate_assets(cfg, shots, "style", assets.DraftArt(), Missing(), assets.Ledger(workspace / "spend.json"), 0.0, 0.07, workers=1)
+    assert Missing.calls == 1  # no retry, and the other three clips are not attempted
+    assert sorted(report.clip_failures) == [0, 1, 2, 3] and report.clips_made == 0
+    assert "omni-missing" in report.motion_stopped and "motion_model" in report.motion_stopped
+    assert all(not s.animate and s.clip is None for s in shots)
+    assert json.loads((workspace / "spend.json").read_text(encoding="utf-8")).get("clip_seconds", 0) == 0
+
+
+def test_passing_animation_errors_are_still_retried(workspace: Path, monkeypatch):
+    from sermon_visuals.studio import assets
+    monkeypatch.setattr(assets.time, "sleep", lambda s: None)
+    cfg, shots = _animated_shots(workspace, 2)
+
+    class Flaky:
+        model = "m"
+        calls = 0
+
+        def animate(self, image, prompt, seconds):
+            Flaky.calls += 1
+            raise RuntimeError("the video model returned no video")
+
+    report = assets.generate_assets(cfg, shots, "style", assets.DraftArt(), Flaky(), assets.Ledger(workspace / "spend.json"), 0.0, 0.07, workers=1)
+    assert Flaky.calls == 4 and report.motion_stopped == ""  # two tries per clip, as before
+
+
 # ---------- storyboard call failures ----------
 
 class _FakeStream:
