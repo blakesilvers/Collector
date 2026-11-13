@@ -93,6 +93,19 @@ def report_key_phrases(board: plan.Storyboard, words: list[plan.Word], sentences
         print(f"    Beat {i + 1}, \"{phrase}\": {plan.DROP_REASONS[why]}.")
 
 
+def report_writing_risk(shots: list[assets.Shot]) -> None:
+    """Warn (never block) about scenes still to be drawn that mention things which often come out with
+    garbled writing on them."""
+    risky = [(s.index + 1, words) for s in shots if s.image and not s.image.exists()
+             for words in [plan.lint_scene(s.beat.scene)] if words]
+    if not risky:
+        return
+    print("  Warning: these scenes mention things that often come out with garbled writing on them. To change one, "
+          "edit its scene in the storyboard file and run again (only that picture is redrawn):")
+    for beat, words in risky:
+        print(f"    Beat {beat}: {', '.join(words)}")
+
+
 def shots_from(board: plan.Storyboard, sentences: list[plan.Sentence], duration: float) -> list[assets.Shot]:
     cuts = [0.0] + [max(0.0, sentences[b.first].s - 0.15) for b in board.beats[1:]] + [duration]
     return [assets.Shot(index=i, start=cuts[i], end=cuts[i + 1], beat=b) for i, b in enumerate(board.beats) if cuts[i + 1] > cuts[i]]
@@ -232,6 +245,7 @@ def run_studio(
     if dropped:
         print(f"  {dropped} planned animation(s) were turned back into stills to stay inside the budget.")
     report_key_phrases(board, words, sentences, layers, spans)
+    report_writing_risk(shots)
     summary = {"work": str(work), "shots": len(shots), "animated": n_anim, "estimate": round(est.total, 2), "storyboard": str(board_path)}
     if plan_only:
         print(f"  Plan only. Storyboard: {board_path}")

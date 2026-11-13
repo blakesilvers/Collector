@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from .. import attribution
 from ..config import Config
-from .levels import Layers
+from .levels import STYLES, Layers
 
 log = logging.getLogger(__name__)
 
@@ -150,10 +150,18 @@ Beats. Divide every sentence into consecutive beats (no gaps, no overlaps, in or
 first sentence through the last). Aim for the target beat length you are given; cut a beat where
 the thought turns, never mid-sentence. For each beat write a scene an illustrator can draw at once:
 concrete subject, action, setting, light and framing. Prefer people doing things, objects, places,
-maps without labels, hands, scrolls, journeys, contrasts shown side by side. Vary the framing from
-beat to beat (wide, medium, close, overhead) so consecutive pictures feel like cuts in a film.
-Describe any recurring person the same way every time (age, build, clothing and its colours) so
-they stay recognisable. Never put text, letters or numbers in a picture. Never draw the speaker.
+maps without labels, hands, rolled scrolls, journeys, contrasts shown side by side. Vary the framing
+from beat to beat (wide, medium, close, overhead) so consecutive pictures feel like cuts in a film.
+Each picture is drawn on its own, without sight of the others, so describe every recurring person
+in full every time they appear (age, build, hair, clothing and its colours); never write "the same
+man" or point back to an earlier beat. Never place a person or event somewhere the speaker says they
+were not: if he says it was not in a palace, do not draw a palace. Never put text, letters or
+numbers in a picture. Never draw the speaker.
+
+Writing. The picture model cannot draw writing, so never ask for anything that would show it: no
+open scrolls or open books with columns of text, no letters, newsletters, newspapers, calendars,
+signs, labels, diagrams, charts, or notes covered in script. Show such objects closed, rolled, blank
+or turned away. Dates, lists and timelines belong on cards, never in pictures.
 
 Key phrases. At most one per beat, only when the speaker says something worth seeing in type. It
 must be consecutive words copied exactly from that beat's sentences. Leave it empty during
@@ -177,6 +185,41 @@ Do not list passages he only mentions.
 Hero beats. Mark the beats that most deserve animation; write every beat's motion line regardless."""
 
 
+def forbids_close_faces(style: str) -> bool:
+    """True if a house-style text rules out faces in close-up ("No people's faces in close-up.")."""
+    for sentence in re.split(r"(?<=[.;!?])\s+", style or ""):
+        s = sentence.lower()
+        if (re.search(r"\bfaces?\b", s) and re.search(r"close[- ]?ups?\b|close up\b", s)
+                and re.search(r"\b(no|never|not|avoid|without)\b", s)):
+            return True
+    return False
+
+
+# Things that image models tend to draw with garbled writing on them. Warned about, never blocked.
+WRITING_PRONE = re.compile(
+    r"\b(scrolls?|books?|pages?|letters?|lettering|newsletters?|newspapers?|calendars?|signs?|signposts?|signboards?|"
+    r"labels?|labell?ed|diagrams?|charts?|notes?|notebooks?|notices?|inscriptions?|inscribed|writing|written|"
+    r"handwriting|script|text|words|parchments?|papyrus|documents?|tablets?|posters?|banners?|placards?|plaques?|"
+    r"menus?|ledgers?|manuscripts?|codex|codices|maps?|headstones?|gravestones?|tombstones?)\b", re.I)
+_SHOWN_SAFELY = re.compile(r"\b(closed|rolled|rolled-up|sealed|blank|unmarked|unlettered|folded|shut|no|without|"
+                           r"turned|face-down)\b", re.I)
+
+
+def lint_scene(scene: str) -> list[str]:
+    """Writing-prone words in a scene description, in order, unless the scene says the object is shown
+    closed, rolled, blank or turned away (within three words either side)."""
+    found: list[str] = []
+    for m in WRITING_PRONE.finditer(scene):
+        before = scene[:m.start()].split()[-3:]
+        after = scene[m.end():].split()[:3]
+        if any(_SHOWN_SAFELY.fullmatch(w.strip(".,;:!?()\"'").lower()) for w in before + after):
+            continue
+        word = m.group(0).lower()
+        if word not in found:
+            found.append(word)
+    return found
+
+
 def _request(cfg: Config, sentences: list[Sentence], reference: str, layers: Layers, direction: str) -> str:
     rules = [
         f"Program: {cfg.ministry.program_name}. Speaker: {cfg.ministry.speaker or 'unknown'}.",
@@ -186,6 +229,9 @@ def _request(cfg: Config, sentences: list[Sentence], reference: str, layers: Lay
     ]
     if cfg.style.avoid:
         rules.append("Avoid in pictures: " + "; ".join(cfg.style.avoid) + ".")
+    if forbids_close_faces(cfg.style.prompt) or forbids_close_faces(STYLES.get(cfg.studio.style, cfg.studio.style)):
+        rules.append("House style: no close-up faces. Show people at medium or wide distance, from behind, turned "
+                     "away or in silhouette; a close shot may show hands or objects, never a face.")
     if cfg.ministry.audience_notes:
         rules.append("Audience: " + cfg.ministry.audience_notes)
     if direction.strip():

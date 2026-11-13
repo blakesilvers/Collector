@@ -1259,3 +1259,55 @@ def test_picture_budget_within_reach_still_asks(workspace: Path, monkeypatch):
     run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), board=_one_picture_board(), provider=provider,
                    confirm=lambda q: asked.append(q) or "n")
     assert asked == ["  Spend about $0.10? [y/N] "] and provider.calls == []
+
+
+# ---------- storyboard prompt and the scene lint ----------
+
+def test_storyboard_prompt_keeps_writing_out_of_pictures():
+    from sermon_visuals.studio import plan
+    text = " ".join(plan.SYSTEM.split())
+    for needle in ("closed, rolled, blank or turned away", "newsletters", "calendars", "signs", "labels", "diagrams",
+                   "notes covered in script", "in full every time", "\"the same man\"",
+                   "somewhere the speaker says they were not"):
+        assert needle in text, needle
+
+
+def test_close_up_faces_rule_follows_the_house_style(workspace: Path):
+    from sermon_visuals.studio import plan
+    from sermon_visuals.studio.levels import layers_for
+    cfg = load_config(workspace / "config.toml")
+    sents, layers = plan.sentences_from_words(_studio_words()), layers_for(3, {})
+    assert plan.forbids_close_faces("Soft light. No people's faces in close-up. Nothing cartoonish.")
+    assert plan.forbids_close_faces("Never show a face in close up.")
+    assert not plan.forbids_close_faces("Close-up of hands kneading bread; faces lit by lamplight.")
+    assert "No people's faces in close-up" in cfg.style.prompt  # the example house style forbids them
+    assert "no close-up faces" in plan._request(cfg, sents, "", layers, "")
+    cfg.style.prompt = "Painterly editorial illustration, warm palette."
+    assert "no close-up faces" not in plan._request(cfg, sents, "", layers, "")
+    assert "the manger" in plan._request(cfg, sents, "", layers, "")  # owner's pending wording left alone
+
+
+def test_scene_lint_flags_writing_prone_things():
+    from sermon_visuals.studio import plan
+    assert plan.lint_scene("An open scroll covered in Hebrew script beside a wall calendar.") == ["scroll", "script", "calendar"]
+    assert plan.lint_scene("A stack of ancient letters and codices; Luke writing on a wax tablet.") == ["letters", "codices", "writing", "tablet"]
+    assert plan.lint_scene("A newsletter pinned under a signpost with a label.") == ["newsletter", "signpost", "label"]
+    # shown closed, rolled, blank or turned away: no warning
+    assert plan.lint_scene("Several rolled scrolls tied with cord and a closed book; a blank sign turned away.") == []
+    assert plan.lint_scene("A leather book lying closed on a table.") == []
+    assert plan.lint_scene("Misty hills near Bethlehem at dawn.") == []
+
+
+def test_scene_lint_warns_before_the_picture_question(workspace: Path, monkeypatch, capsys):
+    from sermon_visuals.studio import plan as P
+    cfg, run, calls, work = _gated_studio(workspace, monkeypatch)
+    cfg.studio.image_usd = 0.10
+    board = P.Storyboard(title="T", chapters=[], readings=[], beats=[
+        P.Beat(first=0, last=1, scene="Misty hills.", motion="", hero=False, key_phrase=""),
+        P.Beat(first=2, last=99, scene="An open scroll covered in script.", motion="", hero=False, key_phrase="")])
+    seen: list[str] = []
+    provider = FakeProvider()
+    run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), board=board, provider=provider,
+                   confirm=lambda q: seen.append(capsys.readouterr().out) or "n")
+    assert len(seen) == 1 and "Beat 2: scroll, script" in seen[0] and "Beat 1" not in seen[0]
+    assert provider.calls == []  # a warning, not a block: the question is still asked and "n" stops it
