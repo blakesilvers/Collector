@@ -1197,3 +1197,65 @@ def test_storyboard_prompt_states_the_attribution_rule(workspace: Path):
     text = " ".join(plan.SYSTEM.split())
     for needle in ("scripture", "another author", "[bracketed]", "leave it empty"):
         assert needle in text, needle
+
+
+# ---------- hard budget stop for pictures ----------
+
+def test_fit_to_budget_refuses_when_stills_alone_overrun(tmp_path: Path):
+    from sermon_visuals.studio import assets, plan
+    beats = [plan.Beat(first=i, last=i, scene=f"s{i}", motion="m", hero=True, key_phrase="") for i in range(4)]
+    shots = [assets.Shot(index=i, start=i * 8.0, end=(i + 1) * 8.0, beat=b) for i, b in enumerate(beats)]
+    assets.choose_animated(shots, 1.0)
+    assets.assign_paths(shots, tmp_path, "style", "guard", "m")
+    with pytest.raises(assets.OverBudget) as info:
+        assets.fit_to_budget(shots, 0.30, 0.10, 0.07, 0.0)  # four stills alone are $0.40
+    assert not any(s.animate for s in shots)  # animation was trimmed first
+    assert info.value.cost == pytest.approx(0.40) and info.value.left == pytest.approx(0.30)
+    assert "$0.40" in str(info.value) and "$0.30" in str(info.value) and "Nothing was generated" in str(info.value)
+
+
+def _one_picture_board():
+    from sermon_visuals.studio import plan as P
+    return P.Storyboard(title="T", chapters=[], readings=[],
+                        beats=[P.Beat(first=0, last=99, scene="A field.", motion="", hero=False, key_phrase="")])
+
+
+@pytest.mark.parametrize("assume_yes", [True, False])
+def test_picture_budget_stop_holds_even_with_yes(workspace: Path, monkeypatch, assume_yes):
+    cfg, run, calls, work = _gated_studio(workspace, monkeypatch)
+    cfg.studio.image_usd = 0.10
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "spend.json").write_text(json.dumps({"usd": cfg.studio.budget_usd - 0.04}), encoding="utf-8")
+    before = (work / "spend.json").read_bytes()
+    provider = FakeProvider()
+    with pytest.raises(RuntimeError) as info:
+        run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), board=_one_picture_board(), provider=provider,
+                       assume_yes=assume_yes, confirm=_no_prompt)
+    message = str(info.value)
+    assert "$0.10" in message and "$0.04" in message and "Nothing was generated" in message
+    assert provider.calls == [] and (work / "spend.json").read_bytes() == before
+    assert not list(work.glob("assets/*.png"))
+
+
+def test_picture_budget_stop_in_plan_only_mode_is_a_note(workspace: Path, monkeypatch, capsys):
+    cfg, run, calls, work = _gated_studio(workspace, monkeypatch)
+    cfg.studio.image_usd = 0.10
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "spend.json").write_text(json.dumps({"usd": cfg.studio.budget_usd - 0.04}), encoding="utf-8")
+    provider = FakeProvider()
+    res = run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), board=_one_picture_board(), provider=provider,
+                         plan_only=True, assume_yes=True, confirm=_no_prompt)
+    assert provider.calls == [] and "video" not in res
+    assert "Nothing was generated" in capsys.readouterr().out
+
+
+def test_picture_budget_within_reach_still_asks(workspace: Path, monkeypatch):
+    cfg, run, calls, work = _gated_studio(workspace, monkeypatch)
+    cfg.studio.image_usd = 0.10
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "spend.json").write_text(json.dumps({"usd": cfg.studio.budget_usd - 0.10}), encoding="utf-8")  # exactly enough
+    asked: list[str] = []
+    provider = FakeProvider()
+    run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), board=_one_picture_board(), provider=provider,
+                   confirm=lambda q: asked.append(q) or "n")
+    assert asked == ["  Spend about $0.10? [y/N] "] and provider.calls == []

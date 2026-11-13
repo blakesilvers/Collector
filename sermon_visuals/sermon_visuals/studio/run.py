@@ -209,7 +209,17 @@ def run_studio(
     assets_dir = work / ("draft_assets" if draft else "assets")
     assets.assign_paths(shots, assets_dir, style, guard, st.motion_model)
     image_usd = 0.0 if draft else st.image_usd
-    dropped = assets.fit_to_budget(shots, budget - ledger.data["usd"], image_usd, st.video_usd_per_second, 0.0)
+    try:
+        dropped = assets.fit_to_budget(shots, budget - ledger.data["usd"], image_usd, st.video_usd_per_second, 0.0)
+    except assets.OverBudget as exc:
+        # A hard stop: no --yes or answer to a question can get past it.
+        message = (f"{exc} The budget for this stretch is ${budget:.2f} (${st.budget_usd:.0f} per full program, pro-rated) "
+                   f"and ${ledger.data['usd']:.2f} has been spent on it so far. To go ahead, raise budget_usd under [studio] "
+                   "in config.toml, or choose a shorter stretch with --minutes, then run the same command again.")
+        if plan_only:
+            print(f"  Note: {message}")
+            return {"work": str(work), "stopped": "over budget", "storyboard": str(board_path)}
+        raise RuntimeError(message) from None
     assets.assign_paths(shots, assets_dir, style, guard, st.motion_model)
     est = assets.estimate(shots, image_usd, st.video_usd_per_second, 0.0)
     n_anim = sum(1 for s in shots if s.animate)

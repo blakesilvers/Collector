@@ -183,14 +183,32 @@ def estimate(shots: list[Shot], image_usd: float, video_usd_per_second: float, s
     return Estimate(new_images, cached_images, new_secs, cached_clips, new_images * image_usd, new_secs * video_usd_per_second, storyboard_usd)
 
 
+PENNY_FRACTION = 1e-6  # float slack, so "exactly what is left" is not refused over a rounding crumb
+
+
+class OverBudget(RuntimeError):
+    """Even with every animation turned back into a still, the pictures cost more than is left of the budget."""
+
+    def __init__(self, cost: float, left: float):
+        self.cost, self.left = cost, max(left, 0.0)
+        super().__init__(
+            f"The pictures would cost about ${cost:.2f}, but only ${self.left:.2f} is left of the budget, even with every "
+            "planned animation turned back into a still. Nothing was generated and nothing was spent.")
+
+
 def fit_to_budget(shots: list[Shot], budget: float, image_usd: float, video_usd_per_second: float, storyboard_usd: float) -> int:
-    """Drop animation from the least important shots until the estimate fits. Returns how many were dropped."""
+    """Drop animation from the least important shots until the estimate fits `budget` (what is left to spend).
+    Returns how many were dropped. Raises OverBudget if it still does not fit once every animation is gone, so
+    nothing is generated whatever the caller was told to assume."""
     dropped = 0
     animated = sorted((s for s in shots if s.animate and s.clip and not s.clip.exists()), key=lambda s: (s.beat.hero, -s.clip_seconds))
-    while animated and estimate(shots, image_usd, video_usd_per_second, storyboard_usd).total > budget:
+    while animated and estimate(shots, image_usd, video_usd_per_second, storyboard_usd).total > budget + PENNY_FRACTION:
         s = animated.pop(0)
         s.animate, s.clip, s.clip_seconds = False, None, 0
         dropped += 1
+    cost = estimate(shots, image_usd, video_usd_per_second, storyboard_usd).total
+    if cost > budget + PENNY_FRACTION:
+        raise OverBudget(cost, budget)
     return dropped
 
 
