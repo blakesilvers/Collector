@@ -84,3 +84,30 @@ fps = 24
 crossfade = 0.6             # seconds of dissolve between sketches
 push_in = true              # slow zoom on each sketch
 title_seconds = 4           # the YouTube title frame shown before the first sketch (0 to skip)
+
+[studio]
+# `python -m sermon_visuals studio <stem> --minutes 5 --level 3`
+# A densely illustrated, layered video with an intensity dial. Start with a 5-minute clip, look at
+# it, then turn the dial up or down.
+#   level 1  new picture about every 40 s, chapter titles, scripture on screen
+#   level 2  picture every 20 s, key phrases pop on screen as spoken, progress bar, pictures ink in
+#   level 3  picture every 12 s, plus info cards (lists, timelines, definitions)
+#   level 4  picture every 9 s, word-highlighted captions, about 30% of the time AI-animated
+#   level 5  picture every 7 s, about 70% of the time AI-animated
+level = 3
+budget_usd = 200            # hard cap per full program; a clip gets its pro-rated share. Nothing is spent without a y/N prompt.
+style = "graphic"           # graphic | ink | woodcut | painterly, or write your own style sentence here
+# Director's notes: plain-English instructions the storyboard must follow. This is the main lever for taste.
+direction = """"""
+whisper_model = "small.en"  # local word timing; "base.en" is faster, "medium.en" more exact
+motion_model = "gemini-omni-1.2-flash"
+motion_resolution = "720p"  # 720p or 1080p (1080p costs about 50% more per second)
+workers = 4                 # pictures and clips generated at once
+image_usd = 0.10            # used for the estimate and the budget cap; update if Google's prices change
+video_usd_per_second = 0.07
+
+[studio.layers]
+# Force any single layer on or off regardless of level, e.g.:
+# captions = false
+# motion_share = 0.5
+# beat_seconds = 10

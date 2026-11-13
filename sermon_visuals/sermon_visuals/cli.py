@@ -89,6 +89,26 @@ def cmd_illustrate(args) -> int:
     return cmd_run(args)
 
 
+def cmd_studio(args) -> int:
+    import os
+    from .studio.run import run_studio
+
+    cfg = load_config(args.config)
+    needed = [] if args.draft else ["GEMINI_API_KEY" if cfg.images.provider == "gemini" else "OPENAI_API_KEY"]
+    needed.append("ANTHROPIC_API_KEY")
+    missing = [k for k in dict.fromkeys(needed) if not os.environ.get(k)]
+    if missing:
+        print(env.explain_missing(missing, Path(args.config).resolve().parent / ".env"), file=sys.stderr)
+        return 2
+    try:
+        run_studio(cfg, args.stem, level=args.level, start=args.start * 60, minutes=args.minutes, assume_yes=args.yes,
+                   plan_only=args.plan_only, replan=args.replan, draft=args.draft, preview=args.preview)
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        print(f"Studio stopped: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_update(args) -> int:
     return update.run_update(reinstall=not args.no_install)
 
@@ -133,6 +153,17 @@ def build_parser() -> argparse.ArgumentParser:
     il.add_argument("--only", nargs="*", metavar="STEM")
     il.add_argument("--force", action="store_true", help="re-plan and re-draw even if already done")
     il.set_defaults(fn=cmd_illustrate)
+    sp = sub.add_parser("studio", help="densely illustrated, layered video with an intensity dial (levels 1 to 5)")
+    sp.add_argument("stem", help="program name, e.g. about_christmas")
+    sp.add_argument("--level", type=int, choices=[1, 2, 3, 4, 5], help="visual intensity; default from config")
+    sp.add_argument("--minutes", type=float, help="render only this many minutes (start with 5)")
+    sp.add_argument("--start", type=float, default=0.0, help="minute to start from (default 0)")
+    sp.add_argument("--draft", action="store_true", help="free placeholder pictures, to check pacing before paying for art")
+    sp.add_argument("--preview", action="store_true", help="half-size render, about 3x faster")
+    sp.add_argument("--plan-only", action="store_true", help="make the storyboard and the cost estimate, then stop")
+    sp.add_argument("--replan", action="store_true", help="discard the saved storyboard for this level and make a new one")
+    sp.add_argument("--yes", action="store_true", help="skip the spend confirmation")
+    sp.set_defaults(fn=cmd_studio)
     up = sub.add_parser("update", help="download the latest code from GitHub and replace it in place (keeps config, keys, programs, output)")
     up.add_argument("--no-install", action="store_true", help="skip pip install after updating")
     up.set_defaults(fn=cmd_update)

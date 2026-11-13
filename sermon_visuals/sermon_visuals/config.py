@@ -98,6 +98,25 @@ class Illustrate:
 
 
 @dataclass
+class Studio:
+    level: int = 3
+    budget_usd: float = 200.0
+    style: str = "graphic"
+    direction: str = ""
+    fps: int = 24
+    width: int = 1920
+    height: int = 1080
+    whisper_model: str = "small.en"
+    motion_model: str = "gemini-omni-1.2-flash"
+    motion_resolution: str = "720p"
+    workers: int = 4
+    image_usd: float = 0.10
+    video_usd_per_second: float = 0.07
+    storyboard_usd: float = 0.60
+    layers: dict = field(default_factory=dict)
+
+
+@dataclass
 class Config:
     paths: Paths
     ministry: Ministry
@@ -109,6 +128,7 @@ class Config:
     video: Video
     verses: Verses
     illustrate: Illustrate
+    studio: Studio
 
 
 def _asset(assets_dir: Path, name: str | None) -> Path | None:
@@ -187,4 +207,9 @@ def load_config(path: str | os.PathLike = "config.toml") -> Config:
     if bad:
         raise ValueError(f"compose.formats has unknown entries: {bad}")
 
-    return Config(paths, ministry, style, extract, transcribe, images, compose, video, verses, illustrate)
+    sd = raw.get("studio", {})
+    studio = Studio(**{k: sd[k] for k in Studio.__dataclass_fields__ if k in sd})
+    studio.direction = " ".join(str(studio.direction).split())
+    if not 1 <= int(studio.level) <= 5:
+        raise ValueError(f"studio.level must be 1 to 5, got {studio.level}")
+    return Config(paths, ministry, style, extract, transcribe, images, compose, video, verses, illustrate, studio)

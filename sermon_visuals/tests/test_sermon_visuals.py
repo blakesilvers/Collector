@@ -380,3 +380,118 @@ def test_update_applies_zip_without_touching_user_files(tmp_path: Path):
     assert (root / "README.md").read_text() == "new readme"
     assert (root / "config.toml").read_text() == "mine" and (root / ".env").read_text() == "secret"
     assert (root / "programs" / "a.mp3").exists()
+
+
+# ---------- studio ----------
+
+def _studio_words():
+    from sermon_visuals.studio.plan import Word
+    text = ("What did the first Christians believe about Christmas? They had no idea what you were talking about. "
+            "The conception of John was in June. The angel came to Mary in December. And the birth of Jesus was in late September.")
+    words, t = [], 0.2
+    for w in text.split():
+        words.append(Word(w=w, s=round(t, 2), e=round(t + 0.25, 2)))
+        t += 0.32 + (0.5 if w[-1] in ".?" else 0)
+    return words
+
+
+def _studio_board():
+    from sermon_visuals.studio import plan
+    return plan.Storyboard(
+        title="About Christmas",
+        chapters=[plan.Chapter(first=0, title="A loaded question"), plan.Chapter(first=2, title="Counting the months")],
+        beats=[
+            plan.Beat(first=0, last=0, scene="A house church at night.", motion="Lamps flicker.", hero=True, key_phrase="the first Christians believe"),
+            plan.Beat(first=1, last=1, scene="A puzzled fisherman.", motion="He shrugs.", hero=False, key_phrase="words he never said"),
+            plan.Beat(first=2, last=4, scene="A ring of seasons.", motion="Slow turn.", hero=False, key_phrase="",
+                      card=plan.Card(type="timeline", title="The months", items=[
+                          plan.CardItem(label="June", detail="John conceived"), plan.CardItem(label="December", detail="The angel comes"),
+                          plan.CardItem(label="Late September", detail="Jesus born")])),
+        ],
+        readings=[],
+    )
+
+
+def test_studio_levels_and_overrides():
+    from sermon_visuals.studio.levels import LEVELS, layers_for
+    assert [LEVELS[k].beat_seconds for k in range(1, 6)] == sorted((LEVELS[k].beat_seconds for k in range(1, 6)), reverse=True)
+    assert LEVELS[3].motion_share == 0 and LEVELS[5].motion_share > LEVELS[4].motion_share > 0
+    assert layers_for(5, {"captions": False, "motion_share": 0.2}).captions is False
+    with pytest.raises(ValueError):
+        layers_for(3, {"sparkles": True})
+
+
+def test_studio_sentences_phrases_and_repair():
+    from sermon_visuals.studio import plan
+    words = _studio_words()
+    sents = plan.sentences_from_words(words)
+    assert len(sents) == 5 and sents[0].text.endswith("Christmas?") and sents[1].first == sents[0].last + 1
+    timed = plan.phrase_times("the first Christians believe", words, sents[0].first, sents[0].last)
+    assert [w for w, _ in timed] == ["the", "first", "Christians", "believe"] and timed[0][1] == words[2].s
+    assert plan.phrase_times("words he never said", words, 0, len(words) - 1) == []
+    messy = plan.Storyboard(title="T", chapters=[plan.Chapter(first=3, title="Late")], readings=[], beats=[
+        plan.Beat(first=1, last=1, scene="a", motion="", hero=False, key_phrase=""),
+        plan.Beat(first=1, last=2, scene="b", motion="", hero=False, key_phrase=""),
+        plan.Beat(first=9, last=12, scene="c", motion="", hero=False, key_phrase=""),
+    ])
+    fixed = plan.repair(messy, 5)
+    assert [(b.first, b.last) for b in fixed.beats] == [(0, 1), (2, 2), (3, 4)]
+    assert fixed.chapters[0].first == 0 and fixed.chapters[-1].first == 3
+
+
+def test_studio_animation_choice_and_budget(tmp_path: Path):
+    from sermon_visuals.studio import assets, plan
+    beats = [plan.Beat(first=i, last=i, scene=f"s{i}", motion="m", hero=(i % 3 == 0), key_phrase="") for i in range(10)]
+    shots = [assets.Shot(index=i, start=i * 8.0, end=(i + 1) * 8.0, beat=b) for i, b in enumerate(beats)]
+    assets.choose_animated(shots, 0.5)
+    chosen = [s.index for s in shots if s.animate]
+    assert len(chosen) == 5 and {0, 3, 6, 9} <= set(chosen)  # heroes first
+    assert all(s.clip_seconds == 8 for s in shots if s.animate)
+    assets.assign_paths(shots, tmp_path, "style", "neg", False, "m")
+    est = assets.estimate(shots, 0.10, 0.07, 0.0)
+    assert est.new_images == 10 and est.new_clip_seconds == 40 and abs(est.total - (1.0 + 2.8)) < 1e-6
+    dropped = assets.fit_to_budget(shots, 2.0, 0.10, 0.07, 0.0)
+    kept = [s.index for s in shots if s.animate]
+    assert dropped == 4 and len(kept) == 1 and shots[kept[0]].beat.hero  # non-heroes dropped first
+    assert assets.estimate(shots, 0.10, 0.07, 0.0).total <= 2.0
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_studio_end_to_end_offline(workspace: Path):
+    from sermon_visuals.studio import assets
+    from sermon_visuals.studio.run import run_studio
+    cfg = load_config(workspace / "config.toml")
+    audio = workspace / "programs" / "btw-0001.mp3"
+    words = _studio_words()
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "anullsrc=r=22050:cl=mono", "-t", f"{words[-1].e + 1:.2f}", str(audio)], check=True)
+
+    class FakeMotion:
+        model = "fake"
+        calls = 0
+
+        def animate(self, image, prompt, seconds):
+            FakeMotion.calls += 1
+            out = workspace / f"fake_{FakeMotion.calls}_{seconds}.mp4"
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-loop", "1", "-i", str(image), "-t", str(seconds), "-vf", "scale=320:180",
+                            "-r", "12", "-pix_fmt", "yuv420p", str(out)], check=True)
+            return out.read_bytes()
+
+    cfg.studio.layers = {"motion_share": 0.3}
+    asked = []
+    res = run_studio(cfg, "btw-0001", level=5, preview=True, provider=assets.DraftArt(), motion=FakeMotion(), words=words, board=_studio_board(),
+                     confirm=lambda q: asked.append(q) or "y")
+    assert asked and "Spend about" in asked[0]
+    video = Path(res["video"])
+    assert video.exists() and Path(res["contact_sheet"]).exists() and res["animated"] >= 1 and FakeMotion.calls >= 1
+    dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(video)],
+                               capture_output=True, text=True, check=True).stdout.strip())
+    assert abs(dur - (words[-1].e + 1)) < 0.6
+    spent = res["spent"]
+    # Second run: everything is cached, nothing is generated or charged, and "no" is never asked.
+    res2 = run_studio(cfg, "btw-0001", level=5, preview=True, provider=assets.DraftArt(), motion=FakeMotion(), words=words,
+                      confirm=lambda q: (_ for _ in ()).throw(AssertionError("should not ask")))
+    assert res2["spent"] == spent and res2["estimate"] == 0
+    # Declining the prompt spends nothing.
+    res3 = run_studio(cfg, "btw-0001", level=5, minutes=0.2, preview=True, provider=assets.DraftArt(), motion=FakeMotion(), words=words,
+                      board=_studio_board(), confirm=lambda q: "n")
+    assert "video" not in res3

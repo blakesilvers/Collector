@@ -170,6 +170,52 @@ re-rendered with `--stages video --force` (or `illustrate --force`). Turn off wi
 What this is not: a single continuous canvas with a visible drawing hand. That remains an
 illustrator's job. A stroke-by-stroke draw-on reveal of each sketch is the natural next step.
 
+## Studio: the intensity dial
+
+```bash
+python -m sermon_visuals studio about_christmas --minutes 5 --level 3
+```
+
+Studio mode builds a densely illustrated, layered video and lets you turn the amount of visual
+activity up or down. Start with a five-minute clip, look at it, change the level, and run again.
+
+| Level | What you get | About, for 5 min | About, for a 28-min program |
+|---|---|---|---|
+| 1 | new picture every 40 s, chapter titles, scripture on screen | $1 | $5 |
+| 2 | picture every 20 s, key phrases pop on screen word by word as spoken, progress bar, pictures ink in over each other | $2 | $9 |
+| 3 | picture every 12 s, plus info cards: lists, timelines, definitions that build as he speaks | $3 | $15 |
+| 4 | picture every 9 s, word-highlighted captions, about 30% of the time AI-animated | $10 | $55 |
+| 5 | picture every 7 s, about 70% of the time AI-animated | $20 | $110 |
+
+How it works:
+
+1. **Word timing.** Whisper runs on your computer (free; the first run downloads the model) and
+   timestamps every word. Every cut, key phrase and card item is placed on those timestamps.
+2. **Storyboard.** Claude reads the timed sentences and your edited transcript and plans the
+   chapters, a picture for every beat, the key phrases (which must be the speaker's exact words or
+   they are not shown), info cards where he lists, dates or defines, and every scripture reading.
+3. **Budget.** The plan is priced before anything is generated, trimmed to fit `studio.budget_usd`
+   (pro-rated for a clip), and you are asked `Spend about $X? [y/N]`. Animations are dropped
+   before pictures, least important first.
+4. **Art.** Pictures are drawn in parallel in one fixed style; chosen shots are then animated from
+   their own picture, so the animation matches the still.
+5. **Render.** Every frame is composed in Python: picture, camera move, ink-in transition, then
+   the text layers.
+
+Everything is cached by content. Re-running at the same level costs nothing. Editing one scene in
+`storyboard_L3.json` redraws only that picture. Outputs are in `output/<stem>/studio/<clip>/`: the
+MP4, the storyboard, `spend.json`, and a **contact sheet**: one JPEG showing 24 frames across the
+clip. Send that image to Claude to get specific feedback and changes.
+
+Useful switches: `--draft` (free placeholder pictures, to judge pacing before paying for art),
+`--preview` (half-size, faster), `--plan-only` (storyboard and estimate, no spend), `--start 12`
+(begin at minute 12), `--replan` (new storyboard).
+
+Taste lives in three settings under `[studio]` in `config.toml`: `style` (graphic, ink, woodcut,
+painterly, or your own sentence), `direction` (plain-English director's notes the storyboard must
+follow, e.g. "more maps and journeys, fewer interiors; show contrasts side by side"), and
+`[studio.layers]` to force any single layer on or off whatever the level.
+
 ## Review before publishing
 
 The review page flags, per program:
