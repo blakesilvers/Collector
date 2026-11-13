@@ -572,3 +572,144 @@ def test_studio_sends_guards_and_cache_key_follows_them(workspace: Path, monkeyp
     cfg.style.avoid = cfg.style.avoid + ["candles"]
     assets.assign_paths(shots, workspace / "a", "style", imagegen.content_guard(cfg), "m")
     assert all(s.image != a and s.clip != b for s, (a, b) in zip(shots, first))
+
+
+# ---------- storyboard call failures ----------
+
+class _FakeStream:
+    def __init__(self, fail_on_enter=None, fail_on_final=None, message=None):
+        self.fail_on_enter, self.fail_on_final, self.message = fail_on_enter, fail_on_final, message
+
+    def __enter__(self):
+        if self.fail_on_enter:
+            raise self.fail_on_enter
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get_final_message(self):
+        if self.fail_on_final:
+            raise self.fail_on_final
+        return self.message
+
+
+class _FakeClaude:
+    def __init__(self, stream: _FakeStream):
+        outer = self
+
+        class Messages:
+            def stream(self, **kwargs):
+                outer.kwargs = kwargs
+                return stream
+
+        self.messages = Messages()
+
+
+def _plan_inputs(workspace: Path):
+    from sermon_visuals.studio import plan
+    from sermon_visuals.studio.levels import layers_for
+    cfg = load_config(workspace / "config.toml")
+    return cfg, plan.sentences_from_words(_studio_words()), layers_for(3, {})
+
+
+def _api_errors():
+    import anthropic
+    import httpx2
+    req = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+
+    def status(cls, code):
+        return cls("boom", response=httpx2.Response(code, request=req), body=None)
+
+    return {
+        "rate": status(anthropic.RateLimitError, 429),
+        "auth": status(anthropic.AuthenticationError, 401),
+        "model": status(anthropic.NotFoundError, 404),
+        "overloaded": status(anthropic.InternalServerError, 529),
+        "bad": status(anthropic.BadRequestError, 400),
+        "network": anthropic.APIConnectionError(request=req),
+    }
+
+
+JARGON = ("ValidationError", "pydantic", "Traceback", "json_invalid", "APIStatusError", "httpx")
+
+
+def test_storyboard_unreadable_reply_is_a_plain_error(workspace: Path):
+    from sermon_visuals.studio import plan
+    cfg, sentences, layers = _plan_inputs(workspace)
+    try:  # exactly what the SDK raises when a cut-off reply is parsed at the end of the text block
+        plan.Storyboard.model_validate_json('{"title": "About Chri')
+    except Exception as exc:  # noqa: BLE001
+        truncated = exc
+    with pytest.raises(plan.StoryboardFailed) as info:
+        plan.make_storyboard(cfg, sentences, "", layers, client=_FakeClaude(_FakeStream(fail_on_final=truncated)))
+    msg = str(info.value)
+    assert isinstance(info.value, RuntimeError) and info.value.charged
+    assert "cut off" in msg and "charged" in msg and "--minutes" in msg
+    assert not any(j in msg for j in JARGON)
+
+
+@pytest.mark.parametrize("kind", ["rate", "auth", "model", "overloaded", "bad", "network"])
+def test_storyboard_api_errors_are_plain(workspace: Path, kind):
+    from sermon_visuals.studio import plan
+    cfg, sentences, layers = _plan_inputs(workspace)
+    err = _api_errors()[kind]
+    for stream in (_FakeStream(fail_on_enter=err), _FakeStream(fail_on_final=err)):
+        with pytest.raises(plan.StoryboardFailed) as info:
+            plan.make_storyboard(cfg, sentences, "", layers, client=_FakeClaude(stream))
+        msg = str(info.value)
+        assert "charged" in msg and not any(j in msg for j in JARGON), msg
+    if kind == "auth":
+        assert "ANTHROPIC_API_KEY" in msg and not info.value.charged
+    if kind == "model":
+        assert cfg.extract.model in msg and not info.value.charged
+
+
+def _sse(*events: dict) -> bytes:
+    return "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in events).encode()
+
+
+def _real_sdk_client(handler):
+    """The installed anthropic SDK, talking to a fake server inside the test (no network, no key)."""
+    import anthropic
+    import httpx2
+    return anthropic.Anthropic(api_key="test-not-a-key", max_retries=0, http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+
+
+def test_storyboard_cut_off_through_the_real_sdk(workspace: Path):
+    import httpx2
+
+    from sermon_visuals.studio import plan
+    cfg, sentences, layers = _plan_inputs(workspace)
+    body = _sse(
+        {"type": "message_start", "message": {"id": "msg_1", "type": "message", "role": "assistant", "model": cfg.extract.model,
+                                              "content": [], "stop_reason": None, "stop_sequence": None,
+                                              "usage": {"input_tokens": 1000, "output_tokens": 1}}},
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": '{"title": "About Chri'}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "max_tokens", "stop_sequence": None}, "usage": {"output_tokens": 64000}},
+        {"type": "message_stop"},
+    )
+    client = _real_sdk_client(lambda req: httpx2.Response(200, headers={"content-type": "text/event-stream"}, content=body))
+    with pytest.raises(plan.StoryboardFailed) as info:
+        plan.make_storyboard(cfg, sentences, "", layers, client=client)
+    assert "cut off" in str(info.value) and info.value.charged
+
+    err = {"type": "error", "error": {"type": "rate_limit_error", "message": "slow down"}}
+    client = _real_sdk_client(lambda req: httpx2.Response(429, json=err))
+    with pytest.raises(plan.StoryboardFailed) as info:
+        plan.make_storyboard(cfg, sentences, "", layers, client=client)
+    assert "Wait a few minutes" in str(info.value) and not info.value.charged
+
+
+def test_storyboard_stop_reasons_are_plain(workspace: Path):
+    from types import SimpleNamespace
+
+    from sermon_visuals.studio import plan
+    cfg, sentences, layers = _plan_inputs(workspace)
+    for reason, words in (("max_tokens", "cut off"), ("refusal", "declined")):
+        msg = SimpleNamespace(stop_reason=reason, content=[], parsed_output=None, usage=None)
+        with pytest.raises(plan.StoryboardFailed) as info:
+            plan.make_storyboard(cfg, sentences, "", layers, client=_FakeClaude(_FakeStream(message=msg)))
+        assert words in str(info.value) and info.value.charged

@@ -190,28 +190,97 @@ def _request(cfg: Config, sentences: list[Sentence], reference: str, layers: Lay
     return "\n".join(rules) + "\n\n<sentences>\n" + lines + "\n</sentences>" + ref
 
 
-def make_storyboard(cfg: Config, sentences: list[Sentence], reference: str, layers: Layers, direction: str = "") -> Storyboard:
+class StoryboardFailed(RuntimeError):
+    """The storyboard call did not produce a usable plan. The message is written for the owner;
+    `charged` says whether Anthropic most likely billed for the attempt."""
+
+    def __init__(self, message: str, charged: bool):
+        super().__init__(message)
+        self.charged = charged
+
+
+SHORTER = "Try a shorter stretch with --minutes, or a lower --level, then run the same command again."
+
+
+def _explain_api_error(exc: Exception, cfg: Config, started: bool = False) -> StoryboardFailed:
+    """Plain-English account of an Anthropic SDK error (classes from anthropic._exceptions)."""
     import anthropic
 
-    client = anthropic.Anthropic()
-    log.info("Storyboarding %d sentences with %s", len(sentences), cfg.extract.model)
-    with client.messages.stream(
-        model=cfg.extract.model,
-        max_tokens=64000,
-        system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        output_config={"effort": "high"},
-        messages=[{"role": "user", "content": _request(cfg, sentences, reference, layers, direction)}],
-        output_format=Storyboard,
-    ) as stream:
-        message = stream.get_final_message()
+    model = cfg.extract.model
+    if isinstance(exc, anthropic.AuthenticationError):
+        return StoryboardFailed("Anthropic did not accept the API key, so no storyboard was made. Nothing was charged. "
+                                "Check the ANTHROPIC_API_KEY line in the .env file next to config.toml.", False)
+    if isinstance(exc, anthropic.PermissionDeniedError):
+        return StoryboardFailed(f"Anthropic says this API key may not use the model \"{model}\". Nothing was charged. "
+                                "Check the key in .env, or the model name under [extract] in config.toml.", False)
+    if isinstance(exc, anthropic.NotFoundError):
+        return StoryboardFailed(f"Anthropic does not recognise the model name \"{model}\". Nothing was charged. "
+                                "Check the model name under [extract] in config.toml.", False)
+    if isinstance(exc, anthropic.RateLimitError):
+        return StoryboardFailed("Anthropic is limiting how many requests this account can send right now. Nothing was charged. "
+                                "Wait a few minutes, then run the same command again.", False)
+    if isinstance(exc, anthropic.BadRequestError):
+        if "credit" in str(getattr(exc, "message", exc)).lower():
+            return StoryboardFailed("Anthropic says the account is out of credit. Nothing was charged. "
+                                    "Add credit in the Anthropic console, then run the same command again.", False)
+        return StoryboardFailed("Anthropic turned the storyboard request down as invalid. Nothing was charged. "
+                                "This needs a fix in the program; pass this note on to whoever maintains it: "
+                                f"{getattr(exc, 'message', exc)}", False)
+    paid = ("The reply had already started, so you were probably charged for part of it."
+            if started else "Nothing was charged.")
+    if isinstance(exc, anthropic.InternalServerError):
+        return StoryboardFailed(f"Anthropic's service had a problem or was overloaded, so no storyboard was made. {paid} "
+                                "Wait a few minutes, then run the same command again.", started)
+    if isinstance(exc, anthropic.APIConnectionError):  # includes APITimeoutError
+        return StoryboardFailed(f"Could not reach Anthropic (the internet connection dropped or the request timed out). {paid} "
+                                "Check the connection, then run the same command again.", started)
+    if isinstance(exc, anthropic.APIStatusError):
+        return StoryboardFailed(f"Anthropic returned an error (code {exc.status_code}), so no storyboard was made. {paid} "
+                                "Run the same command again later; if it keeps happening, pass this note on.", started)
+    return StoryboardFailed(f"The storyboard request failed ({exc}). It is unclear whether anything was charged; "
+                            "check the usage page in the Anthropic console before trying again.", started)
+
+
+def make_storyboard(cfg: Config, sentences: list[Sentence], reference: str, layers: Layers, direction: str = "",
+                    client=None) -> Storyboard:
+    """One streamed Claude call. Every failure is raised as StoryboardFailed with a plain message."""
+    import anthropic
+    from pydantic import ValidationError
+
+    unreadable = StoryboardFailed("Claude's storyboard reply came back cut off or incomplete, so it could not be used. "
+                                  "You were probably charged for it. " + SHORTER, True)
+    started = False
+    try:
+        client = client or anthropic.Anthropic()
+        log.info("Storyboarding %d sentences with %s", len(sentences), cfg.extract.model)
+        with client.messages.stream(
+            model=cfg.extract.model,
+            max_tokens=64000,
+            system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
+            output_config={"effort": "high"},
+            messages=[{"role": "user", "content": _request(cfg, sentences, reference, layers, direction)}],
+            output_format=Storyboard,
+        ) as stream:
+            started = True  # the request was accepted; tokens are being generated and billed from here on
+            message = stream.get_final_message()
+    except ValidationError:
+        # The SDK parses the reply when the text block ends, before the stop reason arrives, so a reply cut off at
+        # max_tokens or abandoned by a refusal shows up here as unparseable JSON rather than as a stop reason.
+        raise unreadable from None
+    except anthropic.AnthropicError as exc:
+        raise _explain_api_error(exc, cfg, started) from exc
     if message.stop_reason == "refusal":
-        raise RuntimeError("Claude declined to storyboard this program.")
+        raise StoryboardFailed("Claude declined to storyboard this program. You may have been charged a little. "
+                               "Run the same command again; if it keeps happening, try a different stretch with --start and --minutes.", True)
     if message.stop_reason == "max_tokens":
-        raise RuntimeError("Storyboard was cut off; try a shorter clip or a lower level.")
+        raise StoryboardFailed("The storyboard was cut off because it ran too long. You were charged for it. " + SHORTER, True)
     board = getattr(message, "parsed_output", None)
     if board is None:
         text = "".join(b.text for b in message.content if b.type == "text")
-        board = Storyboard.model_validate_json(text)
+        try:
+            board = Storyboard.model_validate_json(text)
+        except ValidationError:
+            raise unreadable from None
     return board
 
 
