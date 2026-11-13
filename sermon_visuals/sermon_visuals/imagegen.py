@@ -28,8 +28,9 @@ NO_DIVINE = "Do not depict Jesus, God, or any divine figure in any form, includi
 
 
 def content_guard(cfg: Config) -> str:
-    """The rules every image and video prompt ends with: no text of any kind, no depiction of God
-    (unless depict_christ is switched on) and nothing on the config's avoid list."""
+    """The rules added to every image and video prompt: no text of any kind, no depiction of God
+    (unless depict_christ is switched on) and nothing on the config's avoid list. These are instructions
+    to the model, not a check on what it draws."""
     parts = [cfg.style.negative.strip() or NO_TEXT_FALLBACK, NO_SCRIPT]
     if not cfg.style.depict_christ:
         parts.append(NO_DIVINE)

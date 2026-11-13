@@ -569,9 +569,17 @@ def test_studio_sends_guards_and_cache_key_follows_them(workspace: Path, monkeyp
     assert len(sent) == 4 and all(NO_DIVINE in p and NO_SCRIPT in p and cfg.style.negative in p and "Do not show: " in p for p in sent)
 
     # Changing any guard changes where the picture and clip are cached, so they are drawn again with the new wording.
-    cfg.style.avoid = cfg.style.avoid + ["candles"]
-    assets.assign_paths(shots, workspace / "a", "style", imagegen.content_guard(cfg), "m")
-    assert all(s.image != a and s.clip != b for s, (a, b) in zip(shots, first))
+    changes = {"avoid": lambda c: setattr(c.style, "avoid", c.style.avoid + ["candles"]),
+               "negative": lambda c: setattr(c.style, "negative", "No lettering at all."),
+               "depict": lambda c: setattr(c.style, "depict_christ", True)}
+    for name, change in changes.items():
+        changed = load_config(workspace / "config.toml")
+        change(changed)
+        assets.assign_paths(shots, workspace / "a", "style", imagegen.content_guard(changed), "m")
+        assert all(s.image != a and s.clip != b for s, (a, b) in zip(shots, first)), name
+        sent.clear()
+        assets.generate_assets(changed, shots, "style", Pictures(), Motion(), assets.Ledger(workspace / "spend.json"), 0.1, 0.07, workers=1)
+        assert len(sent) == 4, name  # drawn and animated again, not reused from the old files
 
 
 # ---------- animation model missing ----------
@@ -607,8 +615,35 @@ def test_missing_animation_model_stops_animation_once(workspace: Path, monkeypat
     assert Missing.calls == 1  # no retry, and the other three clips are not attempted
     assert sorted(report.clip_failures) == [0, 1, 2, 3] and report.clips_made == 0
     assert "omni-missing" in report.motion_stopped and "motion_model" in report.motion_stopped
+    assert "Nothing was charged" not in report.motion_stopped  # not provable when other clips may already have been made
     assert all(not s.animate and s.clip is None for s in shots)
     assert json.loads((workspace / "spend.json").read_text(encoding="utf-8")).get("clip_seconds", 0) == 0
+
+
+def test_missing_animation_model_with_parallel_workers(workspace: Path, monkeypatch):
+    import threading
+
+    from sermon_visuals.studio import assets
+    monkeypatch.setattr(assets.time, "sleep", lambda s: None)
+    cfg, shots = _animated_shots(workspace, 12)
+    gate = threading.Barrier(4, timeout=5)
+
+    class Missing:
+        model = "omni-missing"
+        calls = 0
+        lock = threading.Lock()
+
+        def animate(self, image, prompt, seconds):
+            with Missing.lock:
+                Missing.calls += 1
+                n = Missing.calls
+            if n <= 4:
+                gate.wait()  # four clips are in flight at once before the first failure comes back
+            raise RuntimeError("404 NOT_FOUND. models/omni-missing is not found for API version v1beta")
+
+    report = assets.generate_assets(cfg, shots, "style", assets.DraftArt(), Missing(), assets.Ledger(workspace / "spend.json"), 0.0, 0.07, workers=4)
+    assert Missing.calls == 4  # the four already in flight; none retried, none of the other eight started
+    assert sorted(report.clip_failures) == list(range(12)) and report.motion_stopped.count("omni-missing") == 1
 
 
 def test_passing_animation_errors_are_still_retried(workspace: Path, monkeypatch):
@@ -826,12 +861,36 @@ def test_plan_gate_yes_skips_prompt_and_unknown_cost_uses_estimate(workspace: Pa
     assert json.loads((work / "spend.json").read_text(encoding="utf-8"))["usd"] == 0.06
 
 
-def test_plan_gate_failed_paid_call_is_still_counted(workspace: Path, monkeypatch):
+def test_plan_gate_refuses_when_full_length_reply_would_overrun(workspace: Path, monkeypatch):
     from sermon_visuals.studio import plan
-    cfg, run, calls, work = _gated_studio(workspace, monkeypatch, fail=plan.StoryboardFailed("cut off", charged=True))
+    cfg, run, calls, work = _gated_studio(workspace, monkeypatch)
+    ceiling = plan.storyboard_ceiling(cfg.studio, plan.sentences_from_words(_studio_words()))
+    assert ceiling >= plan.MAX_TOKENS * cfg.studio.claude_output_usd_per_mtok / 1e6  # the reply alone can cost this much
+    work.mkdir(parents=True, exist_ok=True)
+    left = (0.06 + ceiling) / 2  # more than the estimate, less than the most the call could cost
+    (work / "spend.json").write_text(json.dumps({"usd": cfg.studio.budget_usd - left}), encoding="utf-8")
+    with pytest.raises(RuntimeError) as info:
+        run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), assume_yes=True, confirm=_no_prompt)
+    assert "Nothing was spent" in str(info.value) and calls == []
+
+
+@pytest.mark.parametrize("usd,expect", [(None, "ceiling"), (0.8123, 0.8123)])
+def test_plan_gate_failed_paid_call_is_still_counted(workspace: Path, monkeypatch, usd, expect):
+    from sermon_visuals.studio import plan
+    cfg, run, calls, work = _gated_studio(workspace, monkeypatch, fail=plan.StoryboardFailed("cut off", charged=True, usd=usd))
     with pytest.raises(plan.StoryboardFailed):
         run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), assume_yes=True, confirm=_no_prompt)
-    assert json.loads((work / "spend.json").read_text(encoding="utf-8"))["usd"] == 0.06
+    if expect == "ceiling":  # cost unknown (a cut-off reply may have run to full length): count the most it could have been
+        expect = round(plan.storyboard_ceiling(cfg.studio, plan.sentences_from_words(_studio_words())), 4)
+    assert json.loads((work / "spend.json").read_text(encoding="utf-8"))["usd"] == expect
+
+
+def test_plan_gate_uncharged_failure_is_not_counted(workspace: Path, monkeypatch):
+    from sermon_visuals.studio import plan
+    cfg, run, calls, work = _gated_studio(workspace, monkeypatch, fail=plan.StoryboardFailed("bad key", charged=False))
+    with pytest.raises(plan.StoryboardFailed):
+        run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), assume_yes=True, confirm=_no_prompt)
+    assert not (work / "spend.json").exists()
 
 
 def test_storyboard_cost_from_token_counts(workspace: Path):
@@ -844,6 +903,21 @@ def test_storyboard_cost_from_token_counts(workspace: Path):
                 + 2_000 * st.claude_cache_write_usd_per_mtok) / 1e6
     assert plan.storyboard_cost(usage, st) == pytest.approx(expected)
     assert plan.storyboard_cost(None, st) is None
+    assert plan.storyboard_cost(SimpleNamespace(), st) is None  # missing counts are unknown, not free
+    assert plan.storyboard_cost(SimpleNamespace(input_tokens=5, output_tokens=None), st) is None
+
+
+def test_storyboard_unreadable_fallback_keeps_known_cost(workspace: Path):
+    from types import SimpleNamespace
+
+    from sermon_visuals.studio import plan
+    cfg, sentences, layers = _plan_inputs(workspace)
+    usage = SimpleNamespace(input_tokens=1000, output_tokens=2000, cache_creation_input_tokens=0, cache_read_input_tokens=0)
+    msg = SimpleNamespace(stop_reason="end_turn", parsed_output=None, usage=usage,
+                          content=[SimpleNamespace(type="text", text='{"title": "half')])
+    with pytest.raises(plan.StoryboardFailed) as info:
+        plan.make_storyboard(cfg, sentences, "", layers, client=_FakeClaude(_FakeStream(message=msg)))
+    assert info.value.charged and info.value.usd == pytest.approx(plan.storyboard_cost(usage, cfg.studio))
 
 
 def test_small_picture_estimate_still_asks(workspace: Path, monkeypatch):

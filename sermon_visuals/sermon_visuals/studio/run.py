@@ -135,13 +135,15 @@ def run_studio(
     elif board is None:
         # The storyboard is a paid Claude call: price it, check the budget and ask before anything is sent.
         plan_usd = plan.storyboard_estimate(st, length) if plan_estimate is None else plan_estimate
+        most = max(plan_usd, plan.storyboard_ceiling(st, sentences))
         left = budget - ledger.data["usd"]
-        if plan_usd > left:
+        if most > left:
             raise RuntimeError(
-                f"Making the plan would cost about ${plan_usd:.2f}, but only ${max(left, 0.0):.2f} is left of the "
-                f"${budget:.2f} budget for this stretch (${st.budget_usd:.0f} per full program, pro-rated). Nothing was spent. "
-                "If you mean to spend more, raise budget_usd under [studio] in config.toml and run the same command again.")
-        print(f"  The plan (storyboard) is made by Claude. Estimated cost: about ${plan_usd:.2f}. "
+                f"Making the plan should cost about ${plan_usd:.2f} but could cost up to ${most:.2f} if Claude's reply runs "
+                f"to full length, and only ${max(left, 0.0):.2f} is left of the ${budget:.2f} budget for this stretch "
+                f"(${st.budget_usd:.0f} per full program, pro-rated). Nothing was spent. If you mean to spend more, "
+                "raise budget_usd under [studio] in config.toml and run the same command again.")
+        print(f"  The plan (storyboard) is made by Claude. Estimated cost: about ${plan_usd:.2f} (at most ${most:.2f}). "
               "This is an estimate; the exact figure is on your Anthropic bill.")
         if not assume_yes and confirm(f"  Spend about ${plan_usd:.2f} on the plan? [y/N] ").strip().lower() not in ("y", "yes"):
             print("  Stopped before spending. Nothing was charged and no plan was saved.")
@@ -154,7 +156,12 @@ def run_studio(
             board, actual = plan.make_storyboard(cfg, sentences, reference, layers, st.direction)
         except plan.StoryboardFailed as exc:
             if exc.charged:  # count it, so the budget stays honest even when the plan was unusable
-                ledger.add(round(exc.usd if exc.usd is not None else plan_usd, 4), storyboards=1)
+                if exc.usd is not None:
+                    ledger.add(round(exc.usd, 4), storyboards=1)
+                else:  # cost unknown; a cut-off reply may have run to full length, so count the most it could be
+                    ledger.add(round(most, 4), storyboards=1)
+                    print(f"  The failed attempt was counted as ${most:.2f}, the most it could have cost, "
+                          "so the budget stays on the safe side. Your Anthropic bill shows the exact figure.")
             raise
         if actual is None:
             ledger.add(plan_usd, storyboards=1)

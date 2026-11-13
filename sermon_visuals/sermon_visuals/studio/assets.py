@@ -326,8 +326,8 @@ def generate_assets(
                 if model_missing(exc) and not report.motion_stopped:
                     name = getattr(motion, "model", "") or "the animation model"
                     report.motion_stopped = (
-                        f"Google could not find the animation model \"{name}\", so animation was switched off for this run "
-                        "and still pictures were used instead. Nothing was charged for animation. Check the motion_model "
+                        f"Google could not find the animation model \"{name}\" (or the service that runs it), so no more "
+                        "clips were tried in this run and still pictures were used instead. Check the motion_model "
                         "line under [studio] in config.toml.")
                     log.warning(report.motion_stopped)
                     return

@@ -228,7 +228,7 @@ def _explain_api_error(exc: Exception, cfg: Config, started: bool = False) -> St
                                 "This needs a fix in the program; pass this note on to whoever maintains it: "
                                 f"{getattr(exc, 'message', exc)}", False)
     paid = ("The reply had already started, so you were probably charged for part of it."
-            if started else "Nothing was charged.")
+            if started else "Probably nothing was charged, since no reply had started.")
     if isinstance(exc, anthropic.InternalServerError):
         return StoryboardFailed(f"Anthropic's service had a problem or was overloaded, so no storyboard was made. {paid} "
                                 "Wait a few minutes, then run the same command again.", started)
@@ -247,9 +247,21 @@ def storyboard_estimate(st, seconds: float) -> float:
     return round(st.storyboard_usd * max(seconds / 1800.0, 0.1), 2)
 
 
+MAX_TOKENS = 64000  # the longest storyboard reply Claude may write (and be paid for)
+
+
+def storyboard_ceiling(st, sentences: list[Sentence]) -> float:
+    """The most one storyboard call could cost: a generous guess at the input (the system prompt, the timed
+    sentences and a reference transcript of about the same length, at 3 characters a token) plus a reply that
+    runs all the way to MAX_TOKENS. Used so the budget cap holds even when the estimate is too low."""
+    text = sum(len(s.text) + 20 for s in sentences)
+    input_tokens = (len(SYSTEM) + 2000 + 2 * text) / 3
+    return (input_tokens * st.claude_input_usd_per_mtok + MAX_TOKENS * st.claude_output_usd_per_mtok) / 1e6
+
+
 def storyboard_cost(usage, st) -> float | None:
     """US dollars for one call, from the token counts in the reply's `usage`; None if they are missing."""
-    if usage is None:
+    if usage is None or getattr(usage, "input_tokens", None) is None or getattr(usage, "output_tokens", None) is None:
         return None
     try:
         tokens = {k: int(getattr(usage, k, 0) or 0) for k in
@@ -277,7 +289,7 @@ def make_storyboard(cfg: Config, sentences: list[Sentence], reference: str, laye
         log.info("Storyboarding %d sentences with %s", len(sentences), cfg.extract.model)
         with client.messages.stream(
             model=cfg.extract.model,
-            max_tokens=64000,
+            max_tokens=MAX_TOKENS,
             system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
             output_config={"effort": "high"},
             messages=[{"role": "user", "content": _request(cfg, sentences, reference, layers, direction)}],
@@ -303,6 +315,7 @@ def make_storyboard(cfg: Config, sentences: list[Sentence], reference: str, laye
         try:
             board = Storyboard.model_validate_json(text)
         except ValidationError:
+            unreadable.usd = usd
             raise unreadable from None
     return board, usd
 
