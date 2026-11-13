@@ -1,0 +1,113 @@
+# sermon-visuals configuration. Copy to config.toml and edit.
+# API keys go in the .env file next to this one (written by `init`), never in here.
+
+[paths]
+input_dir = "programs"     # drop audio here: <stem>.mp3 (+ optional <stem>.txt transcript, <stem>.srt captions)
+output_dir = "output"      # one folder per program is written here
+assets_dir = "assets"      # logo, speaker photo, style reference images
+
+[ministry]
+program_name = "Born to Win"
+speaker = "Ronald L. Dart"
+organization = "Christian Educational Ministries"
+# Who the audience is and what they already hold, so the brief's review flags stay useful.
+# Flags are for factual slips, misattributed words and wording that could embarrass the ministry,
+# not for the ministry's own teaching.
+audience_notes = """Long-time listeners of a Bible-teaching radio program in the Church of God tradition:
+the ministry keeps the seventh-day Sabbath and the biblical Holy Days and does not observe Christmas or Easter.
+Do not flag that teaching as sensitive; the audience expects it."""
+logo = "logo.png"              # relative to assets_dir; optional
+speaker_photo = "speaker.jpg"  # relative to assets_dir; optional, used on the YouTube frame
+
+[style]
+# Every image prompt is prefixed with this. Keep it fixed for the whole archive so the look stays consistent.
+prompt = """Painterly editorial illustration, warm muted palette (ochre, umber, deep blue), soft natural light,
+dignified and calm, inspired by classic Bible-lands landscape painting. Symbolic and scenic imagery only.
+No people's faces in close-up. Nothing cartoonish, nothing glossy or neon."""
+# Appended to every prompt. The text overlay is done by this tool, never by the image model.
+negative = "Absolutely no text, letters, numbers, logos, watermarks or signatures anywhere in the image."
+# Reference images (relative to assets_dir) sent with every request to anchor the look. Optional.
+reference_images = []
+# Guardrails handed to the brief extractor. Edit to match the ministry's convictions.
+depict_christ = false
+avoid = ["crosses used as decoration", "stained glass clichés", "angels with wings", "halos", "modern church interiors"]
+
+[extract]
+model = "claude-opus-5-5"
+effort = "medium"           # low | medium | high
+pull_quotes = 3
+visual_concepts = 2
+
+[transcribe]
+provider = "gemini"         # gemini | openai | none   (none = require <stem>.txt next to the audio)
+model = "gemini-3.5-flash-lite"   # for openai: "gpt-4o-mini-transcribe"
+
+[images]
+provider = "gemini"         # gemini | openai
+gemini_model = "gemini-3.1-flash-image"   # Nano Banana 2. "gemini-3-pro-image" for Nano Banana Pro.
+openai_model = "gpt-image-2"
+candidates = 2              # images generated per visual concept
+image_size = "2K"           # gemini only: 1K | 2K | 4K
+recompose = true            # re-frame the chosen painting for square and vertical cards (2 extra images) instead of cropping
+
+[compose]
+formats = ["youtube", "square", "vertical"]
+font_serif = "auto"     # "auto" finds Georgia / DejaVu Serif / Liberation Serif; or give a path to a .ttf
+font_sans = "auto"
+
+[video]
+enabled = true
+burn_captions = true        # uses <stem>.srt if present
+show_verses = true          # scripture the speaker reads aloud appears on screen while he reads it (needs GEMINI_API_KEY)
+
+[verses]
+# The rule: whenever the speaker reads scripture aloud, the reference and the words appear in a lower
+# band for the length of the reading. Timings and words come from Gemini listening to the audio and are
+# saved to output/<stem>/illustrated/verses.json, which you can correct and re-render.
+enabled = true
+max_words = 55              # longer passages page through, one page per few seconds
+min_page_seconds = 4
+
+[illustrate]
+# `python -m sermon_visuals illustrate --only <stem>`: an illustrated-narration video in the manner of a
+# whiteboard illustrator. The program is split into idea-sized segments, one ink sketch is drawn per
+# segment in a consistent hand, and the sketches are assembled over the audio with a slow push-in and
+# dissolves. About 30 sketches for a half-hour program, roughly $2.
+segment_seconds = 60        # target length of each illustrated stretch; shorter where ideas change
+min_seconds = 8             # slivers shorter than this are merged into the previous segment
+plan_model = "gemini-3.6-flash"   # listens to the audio and times the segments
+style = """Hand-drawn black ink marker sketch on off-white paper, loose confident linework, light cross-hatching,
+generous white space, one accent colour (burnt orange) used sparingly, the feel of a whiteboard illustrator's drawing."""
+reference_images = []       # optional sketches (relative to assets_dir) that fix the hand; else the previous sketch is used
+chain_reference = true      # send the previous sketch as a style reference so the hand stays consistent
+fps = 24
+crossfade = 0.6             # seconds of dissolve between sketches
+push_in = true              # slow zoom on each sketch
+title_seconds = 4           # the YouTube title frame shown before the first sketch (0 to skip)
+
+[studio]
+# `python -m sermon_visuals studio <stem> --minutes 5 --level 3`
+# A densely illustrated, layered video with an intensity dial. Start with a 5-minute clip, look at
+# it, then turn the dial up or down.
+#   level 1  new picture about every 40 s, chapter titles, scripture on screen
+#   level 2  picture every 20 s, key phrases pop on screen as spoken, progress bar, pictures ink in
+#   level 3  picture every 12 s, plus info cards (lists, timelines, definitions)
+#   level 4  picture every 9 s, word-highlighted captions, about 30% of the time AI-animated
+#   level 5  picture every 7 s, about 70% of the time AI-animated
+level = 3
+budget_usd = 200            # hard cap per full program; a clip gets its pro-rated share. Nothing is spent without a y/N prompt.
+style = "graphic"           # graphic | ink | woodcut | painterly, or write your own style sentence here
+# Director's notes: plain-English instructions the storyboard must follow. This is the main lever for taste.
+direction = """"""
+whisper_model = "small.en"  # local word timing; "base.en" is faster, "medium.en" more exact
+motion_model = "gemini-omni-1.2-flash"
+motion_resolution = "720p"  # 720p or 1080p (1080p costs about 50% more per second)
+workers = 4                 # pictures and clips generated at once
+image_usd = 0.10            # used for the estimate and the budget cap; update if Google's prices change
+video_usd_per_second = 0.07
+
+[studio.layers]
+# Force any single layer on or off regardless of level, e.g.:
+# captions = false
+# motion_share = 0.5
+# beat_seconds = 10
