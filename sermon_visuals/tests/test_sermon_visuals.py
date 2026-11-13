@@ -703,6 +703,108 @@ def test_storyboard_cut_off_through_the_real_sdk(workspace: Path):
     assert "Wait a few minutes" in str(info.value) and not info.value.charged
 
 
+# ---------- spend gate before the storyboard ----------
+
+def _gated_studio(workspace: Path, monkeypatch, cost=0.0123, fail=None):
+    """run_studio with the audio length, transcript and the paid storyboard call replaced by recorders."""
+    from sermon_visuals.studio import plan, run
+    calls: list[str] = []
+
+    def fake_storyboard(*args, **kwargs):
+        calls.append("storyboard")
+        if fail:
+            raise fail
+        return _studio_board(), cost
+
+    monkeypatch.setattr(run, "_duration", lambda p: 20.0)
+    monkeypatch.setattr(run, "get_transcript", lambda *a, **k: calls.append("transcript") or (workspace / "programs" / "btw-0001.txt"))
+    monkeypatch.setattr(plan, "make_storyboard", fake_storyboard)
+    (workspace / "programs" / "btw-0001.mp3").write_bytes(b"")
+    cfg = load_config(workspace / "config.toml")
+    return cfg, run, calls, run.studio_dir(cfg, "btw-0001", 0.0, None)
+
+
+def _no_prompt(q):
+    raise AssertionError(f"should not ask: {q}")
+
+
+@pytest.mark.parametrize("plan_only,replan", [(False, False), (True, False), (True, True), (False, True)])
+def test_plan_gate_declined_spends_nothing(workspace: Path, monkeypatch, plan_only, replan):
+    cfg, run, calls, work = _gated_studio(workspace, monkeypatch)
+    old_board = work / "storyboard_L3.json"
+    if replan:  # a saved storyboard exists but --replan asks for a new, paid one
+        work.mkdir(parents=True, exist_ok=True)
+        old_board.write_text(_studio_board().model_dump_json(), encoding="utf-8")
+    before = old_board.read_bytes() if replan else None
+    asked: list[str] = []
+    res = run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), plan_only=plan_only, replan=replan,
+                         confirm=lambda q: asked.append(q) or "n")
+    assert asked == ["  Spend about $0.06 on the plan? [y/N] "]  # $0.60 per half hour, pro-rated, floor of a tenth
+    assert calls == [] and "video" not in res
+    assert not (work / "spend.json").exists()
+    assert (old_board.read_bytes() == before) if replan else not old_board.exists()
+
+
+def test_plan_gate_refuses_over_budget_even_with_yes(workspace: Path, monkeypatch):
+    cfg, run, calls, work = _gated_studio(workspace, monkeypatch)
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "spend.json").write_text(json.dumps({"usd": cfg.studio.budget_usd}), encoding="utf-8")
+    before = (work / "spend.json").read_bytes()
+    with pytest.raises(RuntimeError) as info:
+        run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), assume_yes=True, confirm=_no_prompt)
+    assert "budget" in str(info.value) and "Nothing was spent" in str(info.value)
+    assert calls == [] and (work / "spend.json").read_bytes() == before
+
+
+def test_plan_gate_records_the_real_cost(workspace: Path, monkeypatch, capsys):
+    cfg, run, calls, work = _gated_studio(workspace, monkeypatch, cost=0.0123)
+    run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), plan_only=True, confirm=lambda q: "y")
+    assert calls == ["transcript", "storyboard"]
+    spend = json.loads((work / "spend.json").read_text(encoding="utf-8"))
+    assert spend["usd"] == 0.0123 and spend["storyboards"] == 1
+    assert "estimate" in capsys.readouterr().out
+
+
+def test_plan_gate_yes_skips_prompt_and_unknown_cost_uses_estimate(workspace: Path, monkeypatch):
+    cfg, run, calls, work = _gated_studio(workspace, monkeypatch, cost=None)
+    run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), plan_only=True, assume_yes=True, confirm=_no_prompt)
+    assert calls == ["transcript", "storyboard"]
+    assert json.loads((work / "spend.json").read_text(encoding="utf-8"))["usd"] == 0.06
+
+
+def test_plan_gate_failed_paid_call_is_still_counted(workspace: Path, monkeypatch):
+    from sermon_visuals.studio import plan
+    cfg, run, calls, work = _gated_studio(workspace, monkeypatch, fail=plan.StoryboardFailed("cut off", charged=True))
+    with pytest.raises(plan.StoryboardFailed):
+        run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), assume_yes=True, confirm=_no_prompt)
+    assert json.loads((work / "spend.json").read_text(encoding="utf-8"))["usd"] == 0.06
+
+
+def test_storyboard_cost_from_token_counts(workspace: Path):
+    from types import SimpleNamespace
+
+    from sermon_visuals.studio import plan
+    st = load_config(workspace / "config.toml").studio
+    usage = SimpleNamespace(input_tokens=10_000, output_tokens=30_000, cache_creation_input_tokens=2_000, cache_read_input_tokens=None)
+    expected = (10_000 * st.claude_input_usd_per_mtok + 30_000 * st.claude_output_usd_per_mtok
+                + 2_000 * st.claude_cache_write_usd_per_mtok) / 1e6
+    assert plan.storyboard_cost(usage, st) == pytest.approx(expected)
+    assert plan.storyboard_cost(None, st) is None
+
+
+def test_small_picture_estimate_still_asks(workspace: Path, monkeypatch):
+    from sermon_visuals.studio import assets
+    from sermon_visuals.studio import plan as P
+    cfg, run, calls, work = _gated_studio(workspace, monkeypatch)
+    cfg.studio.image_usd = 0.10
+    one = P.Storyboard(title="T", chapters=[], readings=[],
+                       beats=[P.Beat(first=0, last=99, scene="A field.", motion="", hero=False, key_phrase="")])
+    asked: list[str] = []
+    res = run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), board=one, provider=assets.DraftArt(),
+                         confirm=lambda q: asked.append(q) or "n")
+    assert asked == ["  Spend about $0.10? [y/N] "] and "video" not in res and calls == []
+
+
 def test_storyboard_stop_reasons_are_plain(workspace: Path):
     from types import SimpleNamespace
 

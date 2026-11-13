@@ -194,9 +194,10 @@ class StoryboardFailed(RuntimeError):
     """The storyboard call did not produce a usable plan. The message is written for the owner;
     `charged` says whether Anthropic most likely billed for the attempt."""
 
-    def __init__(self, message: str, charged: bool):
+    def __init__(self, message: str, charged: bool, usd: float | None = None):
         super().__init__(message)
         self.charged = charged
+        self.usd = usd  # the cost from the reported token counts, when the reply got that far
 
 
 SHORTER = "Try a shorter stretch with --minutes, or a lower --level, then run the same command again."
@@ -241,9 +242,30 @@ def _explain_api_error(exc: Exception, cfg: Config, started: bool = False) -> St
                             "check the usage page in the Anthropic console before trying again.", started)
 
 
+def storyboard_estimate(st, seconds: float) -> float:
+    """What a storyboard is expected to cost before it is made: the configured half-hour figure, pro-rated."""
+    return round(st.storyboard_usd * max(seconds / 1800.0, 0.1), 2)
+
+
+def storyboard_cost(usage, st) -> float | None:
+    """US dollars for one call, from the token counts in the reply's `usage`; None if they are missing."""
+    if usage is None:
+        return None
+    try:
+        tokens = {k: int(getattr(usage, k, 0) or 0) for k in
+                  ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")}
+    except (TypeError, ValueError):
+        return None
+    return (tokens["input_tokens"] * st.claude_input_usd_per_mtok
+            + tokens["output_tokens"] * st.claude_output_usd_per_mtok
+            + tokens["cache_creation_input_tokens"] * st.claude_cache_write_usd_per_mtok
+            + tokens["cache_read_input_tokens"] * st.claude_cache_read_usd_per_mtok) / 1e6
+
+
 def make_storyboard(cfg: Config, sentences: list[Sentence], reference: str, layers: Layers, direction: str = "",
-                    client=None) -> Storyboard:
-    """One streamed Claude call. Every failure is raised as StoryboardFailed with a plain message."""
+                    client=None) -> tuple[Storyboard, float | None]:
+    """One streamed Claude call. Returns the storyboard and its cost in dollars from the reported token
+    counts (None if not reported). Every failure is raised as StoryboardFailed with a plain message."""
     import anthropic
     from pydantic import ValidationError
 
@@ -269,11 +291,12 @@ def make_storyboard(cfg: Config, sentences: list[Sentence], reference: str, laye
         raise unreadable from None
     except anthropic.AnthropicError as exc:
         raise _explain_api_error(exc, cfg, started) from exc
+    usd = storyboard_cost(getattr(message, "usage", None), cfg.studio)
     if message.stop_reason == "refusal":
         raise StoryboardFailed("Claude declined to storyboard this program. You may have been charged a little. "
-                               "Run the same command again; if it keeps happening, try a different stretch with --start and --minutes.", True)
+                               "Run the same command again; if it keeps happening, try a different stretch with --start and --minutes.", True, usd)
     if message.stop_reason == "max_tokens":
-        raise StoryboardFailed("The storyboard was cut off because it ran too long. You were charged for it. " + SHORTER, True)
+        raise StoryboardFailed("The storyboard was cut off because it ran too long. You were charged for it. " + SHORTER, True, usd)
     board = getattr(message, "parsed_output", None)
     if board is None:
         text = "".join(b.text for b in message.content if b.type == "text")
@@ -281,7 +304,7 @@ def make_storyboard(cfg: Config, sentences: list[Sentence], reference: str, laye
             board = Storyboard.model_validate_json(text)
         except ValidationError:
             raise unreadable from None
-    return board
+    return board, usd
 
 
 # ---------- grounding the storyboard in the word timings ----------

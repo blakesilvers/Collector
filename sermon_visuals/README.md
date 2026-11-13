@@ -196,6 +196,8 @@ How it works:
 2. **Storyboard.** Claude reads the timed sentences and your edited transcript and plans the
    chapters, a picture for every beat, the key phrases (which must be the speaker's exact words or
    they are not shown), info cards where he lists, dates or defines, and every scripture reading.
+   This is a paid call, so first you see its estimated cost and are asked
+   `Spend about $X on the plan? [y/N]` (it is refused outright if it would go over the budget).
 3. **Budget.** The plan is priced before anything is generated, trimmed to fit `studio.budget_usd`
    (pro-rated for a clip), and you are asked `Spend about $X? [y/N]`. Animations are dropped
    before pictures, least important first.

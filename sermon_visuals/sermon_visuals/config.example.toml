@@ -106,6 +106,13 @@ motion_resolution = "720p"  # 720p or 1080p (1080p costs about 50% more per seco
 workers = 4                 # pictures and clips generated at once
 image_usd = 0.10            # used for the estimate and the budget cap; update if Google's prices change
 video_usd_per_second = 0.07
+storyboard_usd = 0.60       # rough cost of Claude's plan per half hour of audio; shown before you are asked to approve it
+# Claude prices in US dollars per million tokens, used to record what each plan really cost.
+# Claude Opus 5.5 (extract.model) list prices as of 2026-11-03; update if the model or the prices change.
+claude_input_usd_per_mtok = 4.00
+claude_output_usd_per_mtok = 20.00
+claude_cache_write_usd_per_mtok = 5.00
+claude_cache_read_usd_per_mtok = 0.20
 
 [studio.layers]
 # Force any single layer on or off regardless of level, e.g.:

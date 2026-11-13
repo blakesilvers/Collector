@@ -112,7 +112,14 @@ class Studio:
     workers: int = 4
     image_usd: float = 0.10
     video_usd_per_second: float = 0.07
-    storyboard_usd: float = 0.60
+    storyboard_usd: float = 0.60  # rough estimate per half hour of audio, shown before the plan is made
+    # Claude prices in US dollars per million tokens, used to record what a storyboard actually cost from the
+    # token counts Claude reports. Claude Opus 5.5 (the default extract.model) list prices as of 2026-11-03;
+    # the cache-write figure assumes the usual 1.25x of the input price. Update these if the model or prices change.
+    claude_input_usd_per_mtok: float = 4.00
+    claude_output_usd_per_mtok: float = 20.00
+    claude_cache_write_usd_per_mtok: float = 5.00
+    claude_cache_read_usd_per_mtok: float = 0.20
     layers: dict = field(default_factory=dict)
 
 

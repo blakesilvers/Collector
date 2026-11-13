@@ -96,6 +96,7 @@ def run_studio(
     words: list[plan.Word] | None = None,
     board: plan.Storyboard | None = None,
     confirm=input,
+    plan_estimate: float | None = None,
 ) -> dict:
     st = cfg.studio
     level = level or st.level
@@ -128,15 +129,39 @@ def run_studio(
     # 2. storyboard
     board_path = work / f"storyboard_L{level}.json"
     ledger = assets.Ledger(work / "spend.json")
+    budget = max(3.0, st.budget_usd * length / max(full, 1.0))
     if board is None and board_path.exists() and not replan:
         board = plan.Storyboard.model_validate_json(board_path.read_text(encoding="utf-8"))
     elif board is None:
+        # The storyboard is a paid Claude call: price it, check the budget and ask before anything is sent.
+        plan_usd = plan.storyboard_estimate(st, length) if plan_estimate is None else plan_estimate
+        left = budget - ledger.data["usd"]
+        if plan_usd > left:
+            raise RuntimeError(
+                f"Making the plan would cost about ${plan_usd:.2f}, but only ${max(left, 0.0):.2f} is left of the "
+                f"${budget:.2f} budget for this stretch (${st.budget_usd:.0f} per full program, pro-rated). Nothing was spent. "
+                "If you mean to spend more, raise budget_usd under [studio] in config.toml and run the same command again.")
+        print(f"  The plan (storyboard) is made by Claude. Estimated cost: about ${plan_usd:.2f}. "
+              "This is an estimate; the exact figure is on your Anthropic bill.")
+        if not assume_yes and confirm(f"  Spend about ${plan_usd:.2f} on the plan? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("  Stopped before spending. Nothing was charged and no plan was saved.")
+            return {"work": str(work), "stopped": "plan not approved"}
         try:
             reference = get_transcript(cfg, stem, audio, cfg.paths.output_dir / stem).read_text(encoding="utf-8")
         except Exception:
             reference = ""
-        board = plan.make_storyboard(cfg, sentences, reference, layers, st.direction)
-        ledger.add(round(st.storyboard_usd * max(length / 1800.0, 0.1), 2), storyboards=1)  # an estimate; the exact figure is on your Anthropic bill
+        try:
+            board, actual = plan.make_storyboard(cfg, sentences, reference, layers, st.direction)
+        except plan.StoryboardFailed as exc:
+            if exc.charged:  # count it, so the budget stays honest even when the plan was unusable
+                ledger.add(round(exc.usd if exc.usd is not None else plan_usd, 4), storyboards=1)
+            raise
+        if actual is None:
+            ledger.add(plan_usd, storyboards=1)
+            print(f"  Plan made. Counted as ${plan_usd:.2f} (the estimate; Claude did not report token counts).")
+        else:
+            ledger.add(round(actual, 4), storyboards=1)
+            print(f"  Plan made. Cost: ${actual:.2f}, worked out from the token counts Claude reported.")
     board = plan.repair(board, len(sentences))
     board_path.write_text(board.model_dump_json(indent=2), encoding="utf-8")
 
@@ -148,7 +173,6 @@ def run_studio(
     assets_dir = work / ("draft_assets" if draft else "assets")
     assets.assign_paths(shots, assets_dir, style, guard, st.motion_model)
     image_usd = 0.0 if draft else st.image_usd
-    budget = max(3.0, st.budget_usd * length / max(full, 1.0))
     dropped = assets.fit_to_budget(shots, budget - ledger.data["usd"], image_usd, st.video_usd_per_second, 0.0)
     assets.assign_paths(shots, assets_dir, style, guard, st.motion_model)
     est = assets.estimate(shots, image_usd, st.video_usd_per_second, 0.0)
@@ -165,7 +189,7 @@ def run_studio(
     if plan_only:
         print(f"  Plan only. Storyboard: {board_path}")
         return summary
-    if est.total > 0.5 and not assume_yes:
+    if est.total > 0 and not assume_yes:
         if confirm(f"  Spend about ${est.total:.2f}? [y/N] ").strip().lower() not in ("y", "yes"):
             print("  Stopped before spending. The storyboard is saved; run again to continue.")
             return summary
