@@ -255,6 +255,14 @@ def model_missing(exc: Exception) -> bool:
     return "model" in text and any(p in text for p in ("not found", "does not exist", "unknown model"))
 
 
+class _OverAllowance(RuntimeError):
+    """A paid request was not sent because it would pass what is left of the budget."""
+
+
+def over_allowance(exc: Exception) -> bool:
+    return isinstance(exc, _OverAllowance)
+
+
 @dataclass
 class AssetReport:
     images_made: int = 0
@@ -295,6 +303,13 @@ def generate_assets(
                 return False
             reserved += cost
             return True
+
+    def paid(cost: float, call):
+        """One request the provider may bill: reserve its cost first. Every attempt, retries included, reserves
+        its own cost, because a reply that times out may still have been charged."""
+        if not reserve(cost):
+            raise _OverAllowance("making it would go past what is left of the budget")
+        return call()
     todo: dict[Path, Shot] = {}
     for s in shots:
         if s.image and not s.image.exists():
@@ -306,12 +321,8 @@ def generate_assets(
 
     def draw(s: Shot, refs: list[Path]) -> None:
         prompt = image_prompt(style, s.beat.scene, guard)
-        if not reserve(image_usd):
-            with lock:
-                report.image_failures.append(s.index)
-            return
         try:
-            data = _retry(lambda: provider.generate(prompt, "16:9", refs[-3:]))
+            data = _retry(lambda: paid(image_usd, lambda: provider.generate(prompt, "16:9", refs[-3:])), give_up=over_allowance)
             s.image.parent.mkdir(parents=True, exist_ok=True)
             s.image.write_bytes(data)
             ledger.add(image_usd, images=1)
@@ -348,15 +359,15 @@ def generate_assets(
         raise RuntimeError("animated shots were planned but no motion provider is configured")
 
     def move(s: Shot) -> None:
-        if report.motion_stopped or not reserve(s.clip_seconds * video_usd_per_second):
-            # the animation model is missing, or the clip would pass the budget: do not try (or pay for) it
+        if report.motion_stopped:  # the animation model is missing; do not try (or pay for) any more clips
             s.animate, s.clip = False, None
             with lock:
                 report.clip_failures.append(s.index)
             return
         try:
-            data = _retry(lambda: motion.animate(s.image, motion_prompt(s.beat, guard), s.clip_seconds), attempts=2, wait=8.0,
-                          give_up=model_missing)
+            data = _retry(lambda: paid(s.clip_seconds * video_usd_per_second,
+                                       lambda: motion.animate(s.image, motion_prompt(s.beat, guard), s.clip_seconds)),
+                          attempts=2, wait=8.0, give_up=lambda e: model_missing(e) or over_allowance(e))
             s.clip.write_bytes(data)
             ledger.add(s.clip_seconds * video_usd_per_second, clip_seconds=s.clip_seconds)
             with lock:

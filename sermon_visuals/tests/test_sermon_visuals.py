@@ -1226,14 +1226,16 @@ def test_splitter_review_gaps_are_closed():
     for k in range(8):
         assert who(f"continuation line number {k}", lead, *long_verse) == A.SCRIPTURE, k
     # a quotation running over two paragraphs: the first paragraph has an opening mark and no closing one
-    assert who("somebody else writing a long letter",
-               "I want to read this to you from a letter that came in the post this week, it is long:" + _WIDE,
-               "“First paragraph of somebody else writing a long letter to the programme" + _WIDE, "",
-               "“Second paragraph of the letter ends here, with many thanks to you all.”",
-               "That is what he wrote to me, and I think he is right, so let us go on with Luke." + _WIDE) != A.SPEAKER
+    letter = ["I want to read this to you from a letter that came in the post this week, it is long:" + _WIDE,
+              "“First paragraph of somebody else writing a long letter to the programme" + _WIDE, "",
+              "“Second paragraph of the letter ends here, with many thanks to you all.”",
+              "That is what he wrote to me, and I think he is right, so let us go on with Luke." + _WIDE]
+    assert who("somebody else writing a long letter", *letter) == A.OTHER_AUTHOR
+    assert who("the letter ends here, with many thanks", *letter) == A.OTHER_AUTHOR
+    assert who("That is what he wrote to me", *letter) == A.SPEAKER  # his words again after the closing mark
     # single curly quotation marks; the apostrophe inside does not end the quotation
     assert who("another author's actual words", "So then he wrote, ‘These are another author’s actual words, "
-               "not mine at all.’ And that was that." + _WIDE) != A.SPEAKER
+               "not mine at all.’ And that was that." + _WIDE) == A.OTHER_AUTHOR
     # credit lines that end in a full stop: a dash credit and a title-case credit
     for credit in ("— C. S. Lewis, Mere Christianity.", "American Presbyterian Church, Christ's Birth."):
         assert who("the date is lost to history forever",
@@ -1241,14 +1243,30 @@ def test_splitter_review_gaps_are_closed():
                    "The writer says that we cannot know the hour of his birth at all, whatever we try" + _WIDE,
                    "and that the date is lost to history forever, as far as anyone can tell.",
                    credit, "Now back to Luke, and what he tells us about the shepherds." + _WIDE) == A.OTHER_AUTHOR, credit
-    # reference lines in other common shapes open a scripture block
-    for ref in ("LUKE 1", "Luke 1:1, 17", "Ps. 23", "Luke 1:1-4 (KJV)", "St. John 1"):
-        assert who("which from the beginning were eyewitnesses", ref,
-                   "Even as they delivered them to us, which from the beginning were eyewitnesses" + _WIDE,
-                   "AKJV") == A.SCRIPTURE, ref
-    # "2. And ..." is a verse line too
+    # ...also when the last line of the quotation is short and has no closing punctuation
+    assert who("we cannot know the hour of his birth",
+               "I came across this in a book, and it is worth reading to you now, so here it is." + _WIDE,
+               "The writer says that we cannot know the hour of his birth at all, whatever we try" + _WIDE,
+               "and the date is lost to history forever", "— C. S. Lewis, Mere Christianity.",
+               "Now back to Luke, and what he tells us about the shepherds." + _WIDE) == A.OTHER_AUTHOR
+    # reference lines in other common shapes open a scripture block on their own (no version label after them
+    # to rescue the block, and his own words after it)
+    mine = "Now that is the verse, and I say this in my own words to you here." + _WIDE
+    for ref in ("LUKE 1", "Luke 1:1, 17", "Ps. 23", "Luke 1:1-4 (KJV)", "St. John 1", "John 3:16 (ESV)."):
+        lines = ["Some words of my own come first here, and plenty of them." + _WIDE, ref,
+                 "Even as they delivered them to us, which from the beginning were eyewitnesses" + _WIDE, mine]
+        assert who("which from the beginning were eyewitnesses", *lines) == A.SCRIPTURE, ref
+        # (with no label to close the block, up to MAX_VERSE_CONTINUATION lines after it are also treated as
+        # scripture, so his next line is not claimed as his: conservative by design)
+    # "2. Even as ..." is a verse line too, again with no label after it
     assert who("which from the beginning were eyewitnesses", "Some words of my own come first here, and plenty of them." + _WIDE,
-               "2. Even as they delivered them to us, which from the beginning were eyewitnesses" + _WIDE, "KJV") == A.SCRIPTURE
+               "2. Even as they delivered them to us, which from the beginning were eyewitnesses" + _WIDE, mine) == A.SCRIPTURE
+    # a short wrapped line inside an over-long verse does not stop the cut-off lines being given back
+    long_verse = (["Luke 9", "1 And it came to pass that he went up into a mountain to pray" + _WIDE]
+                  + [f"continuation line number {k}" + _WIDE for k in range(7)] + ["short wrap here"]
+                  + ["late continuation line" + _WIDE, "2 And a voice came out of the cloud" + _WIDE, "AKJV"])
+    for phrase in ("continuation line number 6", "late continuation line"):
+        assert who(phrase, lead, *long_verse) == A.SCRIPTURE, phrase
 
 
 def test_a_phrase_found_both_in_his_words_and_a_reading_is_not_his():
@@ -1256,7 +1274,14 @@ def test_a_phrase_found_both_in_his_words_and_a_reading_is_not_his():
     at the moment it is shown; with no way to tell which occurrence is on screen, it is not treated as his."""
     from sermon_visuals import attribution as A
     echoed = EXCERPT + "\n" + "And that is the point: we really do not know when Christ was born, and that matters." + _WIDE
-    assert A.whose("we really do not know when Christ was born", A.split_transcript(echoed)) == A.OTHER_AUTHOR
+    spans = A.split_transcript(echoed)
+    assert A.whose("And that is the point", spans) == A.SPEAKER  # the added line really is his
+    assert A.whose("we really do not know when Christ was born", spans) == A.OTHER_AUTHOR
+    # directly, in both orders: the old first-match rule returned SPEAKER when his span came first
+    his = A.Span(A.SPEAKER, "we really do not know when Christ was born", 1, 1)
+    article = A.Span(A.OTHER_AUTHOR, "we really do not know when Christ was born", 2, 2)
+    assert A.whose("we really do not know", [his, article]) == A.OTHER_AUTHOR
+    assert A.whose("we really do not know", [article, his]) == A.OTHER_AUTHOR
 
 
 def test_unreadable_or_unmarked_transcript_is_said_plainly(workspace: Path, monkeypatch, capsys):
@@ -1341,6 +1366,49 @@ def test_generation_never_spends_past_what_is_left(workspace: Path):
     report = assets.generate_assets(cfg, shots, "style", provider, None, ledger, 0.10, 0.07, workers=3, budget_left=0.25)
     assert len(provider.calls) == 2 and ledger.data["usd"] == pytest.approx(0.20)
     assert report.budget_stopped and "budget" in report.budget_stopped
+
+
+def test_every_paid_attempt_counts_against_the_budget(workspace: Path, monkeypatch):
+    """A retry is another request the provider may bill (a timed-out reply may still have been charged), so each
+    attempt reserves its own cost; and pictures and clips draw on one allowance."""
+    from sermon_visuals import imagegen
+    from sermon_visuals.studio import assets, plan
+    monkeypatch.setattr(assets.time, "sleep", lambda s: None)
+    cfg = load_config(workspace / "config.toml")
+    beats = [plan.Beat(first=i, last=i, scene=f"scene {i}", motion="m", hero=True, key_phrase="") for i in range(3)]
+
+    def fresh(tag, animate=False):
+        shots = [assets.Shot(index=i, start=i * 5.0, end=(i + 1) * 5.0, beat=b, animate=animate, clip_seconds=5 if animate else 0)
+                 for i, b in enumerate(beats)]
+        assets.assign_paths(shots, workspace / tag, "style", imagegen.content_guard(cfg), "m")
+        return shots
+
+    class Flaky(FakeProvider):
+        attempts = 0
+
+        def generate(self, prompt, aspect, references):
+            Flaky.attempts += 1
+            if Flaky.attempts == 1:
+                raise TimeoutError("the reply timed out (it may still have been billed)")
+            return super().generate(prompt, aspect, references)
+
+    assets.generate_assets(cfg, fresh("r"), "style", Flaky(), None, assets.Ledger(workspace / "r.json"), 0.10, 0.07,
+                           workers=1, budget_left=0.25)
+    assert Flaky.attempts == 2  # the failed attempt and one success use up $0.20; a third attempt would pass $0.25
+
+    class Motion:
+        model = "m"
+        calls = 0
+
+        def animate(self, image, prompt, seconds):
+            Motion.calls += 1
+            return b"clip"
+
+    provider = FakeProvider()
+    ledger = assets.Ledger(workspace / "m.json")
+    assets.generate_assets(cfg, fresh("m", animate=True), "style", provider, Motion(), ledger, 0.10, 0.07, workers=1,
+                           budget_left=0.70)  # 3 pictures ($0.30) + one 5-second clip ($0.35) fit; a second clip does not
+    assert len(provider.calls) == 3 and Motion.calls == 1 and ledger.data["usd"] <= 0.70 + 1e-9
 
 
 def test_picture_budget_within_reach_still_asks(workspace: Path, monkeypatch):

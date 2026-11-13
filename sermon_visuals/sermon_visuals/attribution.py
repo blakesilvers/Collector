@@ -41,7 +41,7 @@ _BOOK = r"(?:(?:[1-3]|I{1,3})\s*)?(?:St\.?\s+)?[A-Z][A-Za-z]*\.?(?:\s+(?:of\s+)?
 _VERSES = r"\d{1,3}(?:\s*[-–]\s*\d{1,3})?"
 _CHAPTER = (rf"\d{{1,3}}(?:\s*[:.]\s*{_VERSES}(?:\s*,\s*{_VERSES})*)?"
             r"(?:\s*[-–]\s*\d{1,3}(?:\s*[:.]\s*\d{1,3})?)?")
-_REFERENCE = re.compile(rf"^{_BOOK}\s+{_CHAPTER}(?:\s*\(?{_VERSIONS}\)?)?$")  # "Luke 1", "Ps. 23", "Luke 1:1-4 (KJV)"
+_REFERENCE = re.compile(rf"^{_BOOK}\s+{_CHAPTER}(?:\s*\(?{_VERSIONS}\)?)?[.:]?$")  # "Luke 1", "Ps. 23", "John 3:16 (ESV)."
 _VERSION = re.compile(rf"^\(?{_VERSIONS}\)?\.?$")
 _VERSE_START = re.compile(r"^\d{1,3}\.?\s+[\[(“\"‘'A-Z]")  # "5 To be taxed", "2. Even as"
 _NOT_VERSE = re.compile(rf"^[1-3]\s+{NUMBERED_BOOKS}\b")  # "1 John begins by saying" is his, not verse 1
@@ -101,8 +101,9 @@ def _classify_lines(lines: list[str]) -> list[str | None]:
     cut_at: int | None = None  # where a long verse was assumed to end; given back if the block goes on
 
     def previous(i: int) -> int | None:
+        """The nearest line above that is not blank or a short note (a quotation's last line can be short)."""
         j = i - 1
-        while j >= 0 and kinds[j] is None:
+        while j >= 0 and kinds[j] in (None, EDITOR_NOTE):
             j -= 1
         return j if j >= 0 else None
 
@@ -156,8 +157,7 @@ def _classify_lines(lines: list[str]) -> list[str | None]:
                 claim_back(i, OTHER_AUTHOR)
                 cut_at = None
             elif len(line) <= SHORT_LINE and not _is_closed(line):
-                kinds[i] = EDITOR_NOTE  # title, byline, heading, address block
-                cut_at = None
+                kinds[i] = EDITOR_NOTE  # title, byline, heading, address block, or a short wrapped line
             else:
                 kinds[i] = SPEAKER
     return kinds
