@@ -875,12 +875,22 @@ def test_storyboard_ceiling_bounds_the_request(workspace: Path):
     from sermon_visuals.studio.levels import layers_for
     cfg = load_config(workspace / "config.toml")
     st, sents, layers = cfg.studio, plan.sentences_from_words(_studio_words()), layers_for(3, {})
-    long_ref = "word " * 60_000  # a long reference transcript, beyond the allowance made before it is read
+    long_ref = "“word” — " * 30_000  # a long reference with curly quotes, beyond the allowance made before it is read
     request = plan.SYSTEM + plan._request(cfg, sents, long_ref, layers, "")
-    # independent bound: every character a token, at the dearest input rate, plus a full-length reply
-    worst = (len(request) * st.claude_cache_write_usd_per_mtok + plan.MAX_TOKENS * st.claude_output_usd_per_mtok) / 1e6
-    assert plan.storyboard_ceiling(cfg, sents, layers, "", long_ref) >= worst / 2  # 2 characters a token
-    assert plan.storyboard_ceiling(cfg, sents, layers, "", None) >= plan.storyboard_ceiling(cfg, sents, layers, "", "x" * 50_000)
+    # independent bound: a byte-level tokenizer makes at most one token per UTF-8 byte; price it all at the dearest
+    # input rate and add a reply that runs to the full MAX_TOKENS
+    worst = (len(request.encode("utf-8")) * max(st.claude_input_usd_per_mtok, st.claude_cache_write_usd_per_mtok)
+             + plan.MAX_TOKENS * st.claude_output_usd_per_mtok) / 1e6
+    assert plan.storyboard_ceiling(cfg, sents, layers, "", long_ref) >= worst
+    assert plan.storyboard_ceiling(cfg, sents, layers, "", None) >= plan.storyboard_ceiling(cfg, sents, layers, "", "x" * 100_000)
+
+
+def test_missing_model_check_is_narrow():
+    from sermon_visuals.studio import assets
+    assert assets.model_missing(RuntimeError("404 NOT_FOUND. models/omni-x is not found for API version v1beta"))
+    assert assets.model_missing(type("E", (Exception,), {"status_code": 404})("gone"))
+    assert not assets.model_missing(RuntimeError("duration 14s is not supported for this model"))
+    assert not assets.model_missing(RuntimeError("503 the model is overloaded"))
 
 
 def test_plan_gate_refuses_when_full_length_reply_would_overrun(workspace: Path, monkeypatch):

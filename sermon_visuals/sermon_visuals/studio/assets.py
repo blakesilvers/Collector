@@ -233,7 +233,7 @@ def model_missing(exc: Exception) -> bool:
     if getattr(exc, "status_code", None) == 404 or getattr(exc, "code", None) == 404:
         return True
     text = str(exc).lower()
-    return "model" in text and any(p in text for p in ("not found", "does not exist", "is not supported", "unknown model"))
+    return "model" in text and any(p in text for p in ("not found", "does not exist", "unknown model"))
 
 
 @dataclass

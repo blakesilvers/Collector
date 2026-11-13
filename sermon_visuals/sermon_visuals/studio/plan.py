@@ -250,20 +250,21 @@ def storyboard_estimate(st, seconds: float) -> float:
 MAX_TOKENS = 64000  # the longest storyboard reply Claude may write (and be paid for)
 
 
-REFERENCE_ALLOWANCE = 120_000  # characters allowed for the reference transcript before it is read (a half hour is ~30,000)
+REFERENCE_ALLOWANCE = 150_000  # bytes allowed for the reference transcript before it is read (a half hour is ~30,000)
+REQUEST_OVERHEAD_TOKENS = 5_000  # message framing and the storyboard's output schema, generously
 
 
 def storyboard_ceiling(cfg: Config, sentences: list[Sentence], layers: Layers, direction: str = "",
                        reference: str | None = None) -> float:
-    """The most one storyboard call could cost, so the budget cap holds even when the estimate is low: the
-    exact request text (with REFERENCE_ALLOWANCE characters standing in for a transcript not yet read) counted
-    at 2 characters a token and priced at the dearest input rate, plus a reply that runs all the way to MAX_TOKENS."""
+    """The most one storyboard call could cost, so the budget cap holds even when the estimate is low. Input is
+    counted as one token per UTF-8 byte of the exact request (a byte-level tokenizer cannot use more), with
+    REFERENCE_ALLOWANCE standing in for a transcript not yet read, plus a fixed overhead, all at the dearest input
+    rate; output as a reply that runs all the way to MAX_TOKENS."""
     st = cfg.studio
-    chars = len(SYSTEM) + len(_request(cfg, sentences, reference or "", layers, direction))
-    if reference is None:
-        chars += REFERENCE_ALLOWANCE
+    tokens = len((SYSTEM + _request(cfg, sentences, reference or "", layers, direction)).encode("utf-8"))
+    tokens += REQUEST_OVERHEAD_TOKENS + (REFERENCE_ALLOWANCE if reference is None else 0)
     input_rate = max(st.claude_input_usd_per_mtok, st.claude_cache_write_usd_per_mtok)
-    return (chars / 2 * input_rate + MAX_TOKENS * st.claude_output_usd_per_mtok) / 1e6
+    return (tokens * input_rate + MAX_TOKENS * st.claude_output_usd_per_mtok) / 1e6
 
 
 def storyboard_cost(usage, st) -> float | None:
