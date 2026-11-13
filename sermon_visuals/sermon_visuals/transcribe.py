@@ -36,18 +36,19 @@ def pdf_text(pdf: Path) -> str:
 
 
 def edited_transcript(cfg: Config, stem: str) -> str | None:
-    """The ministry's edited transcript (programs/<stem>.txt, else programs/<stem>.pdf), or None if there is
-    none. Never transcribes and never spends: a machine transcript of the audio cannot tell his words from
-    scripture or a quotation he reads, so it is no use for checking whose words are whose."""
+    """The ministry's edited transcript (programs/<stem>.txt, else programs/<stem>.pdf); None if there is none;
+    "" if there is one but it cannot be read (so callers fail closed rather than skip the check). Never
+    transcribes and never spends: a machine transcript of the audio cannot tell his words from scripture or a
+    quotation he reads, so it is no use for checking whose words are whose."""
     txt = find_sidecar(cfg.paths.input_dir, stem, ".txt")
-    if txt:
-        return txt.read_text(encoding="utf-8")
     pdf = find_sidecar(cfg.paths.input_dir, stem, ".pdf")
-    if pdf:
-        try:
-            return pdf_text(pdf) or None
-        except Exception:  # unreadable PDF: treat as no transcript, so the check is reported as not done
-            return None
+    try:
+        if txt:
+            return txt.read_text(encoding="utf-8").strip()
+        if pdf:
+            return pdf_text(pdf)
+    except Exception:  # unreadable file or a scanned PDF with no text
+        return ""
     return None
 
 

@@ -1138,6 +1138,13 @@ def test_key_phrases_need_his_words_and_the_audio():
     # with no reference transcript the old behaviour stands: the audio check alone
     timed, dropped = plan.vet_key_phrases(board, words, sents, None, cards=True)
     assert list(timed) == [0, 1] and [i for i, _, _ in dropped] == [2]
+    # his own words in the transcript, but not spoken during this beat: the audio check alone drops it
+    beats = list(board.beats)
+    beats[2] = beats[2].model_copy(update={"key_phrase": "the first Christians knew when Jesus was born"})
+    timed, dropped = plan.vet_key_phrases(board.model_copy(update={"beats": beats}), words, sents,
+                                          A.split_transcript(EXCERPT), cards=True)
+    assert A.whose("the first Christians knew when Jesus was born", A.split_transcript(EXCERPT)) == A.SPEAKER
+    assert (2, "the first Christians knew when Jesus was born", plan.NOT_HEARD) in dropped
 
 
 def test_timeline_shows_only_his_key_phrases(tmp_path: Path):
@@ -1179,14 +1186,17 @@ def test_quote_cards_recheck_against_his_words(workspace: Path, monkeypatch):
     brief = fake_brief().model_copy(update={"pull_quotes": [
         PullQuote(text="So there's not a hint in the New Testament about believing in Christmas", why="his"),
         PullQuote(text="We really do not know when Christ was born.", why="the article he reads"),
-        PullQuote(text="So long foretold by the prophets", why="added to brief.json by hand"),
     ]})
     monkeypatch.setattr(extract, "extract_brief", lambda cfg, text: brief)
     monkeypatch.setattr(pipeline.imagegen, "make_provider", lambda cfg: FakeProvider())
     cfg = load_config(workspace / "config.toml")
     m = pipeline.run_program(cfg, "btw-0001", ["transcript", "brief", "images"])
     from sermon_visuals.models import QuoteCheck
-    m.quote_checks = [QuoteCheck(text=q.text, verified=True) for q in brief.pull_quotes[:2]]  # stale: all passed
+    m.quote_checks = [QuoteCheck(text=q.text, verified=True) for q in brief.pull_quotes]  # stale: all passed
+    # the owner adds a quote to brief.json by hand after the brief stage; it has no check at all
+    on_disk = json.loads(Path(m.brief).read_text(encoding="utf-8"))
+    on_disk["pull_quotes"].append({"text": "So long foretold by the prophets", "why": "added by hand"})
+    Path(m.brief).write_text(json.dumps(on_disk), encoding="utf-8")
     pipeline.stage_compose(cfg, m, FakeProvider())
     assert {k for k in m.cards if k.startswith("quote")} == {"quote1_square", "quote1_vertical"}
     assert [c.verified for c in m.quote_checks] == [True, False, False]
@@ -1197,6 +1207,72 @@ def test_storyboard_prompt_states_the_attribution_rule(workspace: Path):
     text = " ".join(plan.SYSTEM.split())
     for needle in ("scripture", "another author", "[bracketed]", "leave it empty"):
         assert needle in text, needle
+
+
+_WIDE = " and the words run on for a good while so that this line is as wide as a real wrapped line"
+
+
+def test_splitter_review_gaps_are_closed():
+    from sermon_visuals import attribution as A
+
+    def who(phrase, *lines):
+        return A.whose(phrase, A.split_transcript("\n".join(lines)))
+
+    lead = "I read it to you now, and listen closely to every word the gospel writer puts down here for us all:"
+    # a verse wrapped over more lines than the continuation limit, then another verse and the label
+    long_verse = (["Luke 9", "1 And it came to pass that he went up into a mountain to pray" + _WIDE]
+                  + [f"continuation line number {k}" + _WIDE for k in range(8)]
+                  + ["2 And a voice came out of the cloud saying This is my beloved Son" + _WIDE, "AKJV"])
+    for k in range(8):
+        assert who(f"continuation line number {k}", lead, *long_verse) == A.SCRIPTURE, k
+    # a quotation running over two paragraphs: the first paragraph has an opening mark and no closing one
+    assert who("somebody else writing a long letter",
+               "I want to read this to you from a letter that came in the post this week, it is long:" + _WIDE,
+               "“First paragraph of somebody else writing a long letter to the programme" + _WIDE, "",
+               "“Second paragraph of the letter ends here, with many thanks to you all.”",
+               "That is what he wrote to me, and I think he is right, so let us go on with Luke." + _WIDE) != A.SPEAKER
+    # single curly quotation marks; the apostrophe inside does not end the quotation
+    assert who("another author's actual words", "So then he wrote, ‘These are another author’s actual words, "
+               "not mine at all.’ And that was that." + _WIDE) != A.SPEAKER
+    # credit lines that end in a full stop: a dash credit and a title-case credit
+    for credit in ("— C. S. Lewis, Mere Christianity.", "American Presbyterian Church, Christ's Birth."):
+        assert who("the date is lost to history forever",
+                   "I came across this in a book, and it is worth reading to you now, so here it is." + _WIDE,
+                   "The writer says that we cannot know the hour of his birth at all, whatever we try" + _WIDE,
+                   "and that the date is lost to history forever, as far as anyone can tell.",
+                   credit, "Now back to Luke, and what he tells us about the shepherds." + _WIDE) == A.OTHER_AUTHOR, credit
+    # reference lines in other common shapes open a scripture block
+    for ref in ("LUKE 1", "Luke 1:1, 17", "Ps. 23", "Luke 1:1-4 (KJV)", "St. John 1"):
+        assert who("which from the beginning were eyewitnesses", ref,
+                   "Even as they delivered them to us, which from the beginning were eyewitnesses" + _WIDE,
+                   "AKJV") == A.SCRIPTURE, ref
+    # "2. And ..." is a verse line too
+    assert who("which from the beginning were eyewitnesses", "Some words of my own come first here, and plenty of them." + _WIDE,
+               "2. Even as they delivered them to us, which from the beginning were eyewitnesses" + _WIDE, "KJV") == A.SCRIPTURE
+
+
+def test_a_phrase_found_both_in_his_words_and_a_reading_is_not_his():
+    """If he also says, in his own words, a line from the article he reads, the phrase could be the article's
+    at the moment it is shown; with no way to tell which occurrence is on screen, it is not treated as his."""
+    from sermon_visuals import attribution as A
+    echoed = EXCERPT + "\n" + "And that is the point: we really do not know when Christ was born, and that matters." + _WIDE
+    assert A.whose("we really do not know when Christ was born", A.split_transcript(echoed)) == A.OTHER_AUTHOR
+
+
+def test_unreadable_or_unmarked_transcript_is_said_plainly(workspace: Path, monkeypatch, capsys):
+    cfg, run, calls, work = _gated_studio(workspace, monkeypatch)
+    (workspace / "programs" / "btw-0001.txt").unlink()
+    (workspace / "programs" / "btw-0001.pdf").write_bytes(b"%PDF-1.4 not really a pdf")
+    run.run_studio(cfg, "btw-0001", level=3, words=_words_from(SPOKEN), board=_attribution_board(), plan_only=True,
+                   confirm=_no_prompt)
+    out = capsys.readouterr().out
+    assert "could not be read" in out and "0 will be shown, 3 dropped" in out  # fails closed: nothing shown as his
+    (workspace / "programs" / "btw-0001.pdf").unlink()
+    (workspace / "programs" / "btw-0001.txt").write_text(SPOKEN + "\n" + TRANSCRIPT, encoding="utf-8")  # no marks at all
+    run.run_studio(cfg, "btw-0001", level=3, words=_words_from(SPOKEN), board=_attribution_board(), plan_only=True,
+                   confirm=_no_prompt)
+    out = capsys.readouterr().out
+    assert sum("marks no scripture" in line for line in out.splitlines()) == 1
 
 
 # ---------- hard budget stop for pictures ----------
@@ -1211,7 +1287,8 @@ def test_fit_to_budget_refuses_when_stills_alone_overrun(tmp_path: Path):
         assets.fit_to_budget(shots, 0.30, 0.10, 0.07, 0.0)  # four stills alone are $0.40
     assert not any(s.animate for s in shots)  # animation was trimmed first
     assert info.value.cost == pytest.approx(0.40) and info.value.left == pytest.approx(0.30)
-    assert "$0.40" in str(info.value) and "$0.30" in str(info.value) and "Nothing was generated" in str(info.value)
+    assert "$0.40" in str(info.value) and "$0.30" in str(info.value)
+    assert "No pictures were generated and nothing was spent on them" in str(info.value)
 
 
 def _one_picture_board():
@@ -1232,7 +1309,7 @@ def test_picture_budget_stop_holds_even_with_yes(workspace: Path, monkeypatch, a
         run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), board=_one_picture_board(), provider=provider,
                        assume_yes=assume_yes, confirm=_no_prompt)
     message = str(info.value)
-    assert "$0.10" in message and "$0.04" in message and "Nothing was generated" in message
+    assert "$0.10" in message and "$0.04" in message and "No pictures were generated and nothing was spent on them" in message
     assert provider.calls == [] and (work / "spend.json").read_bytes() == before
     assert not list(work.glob("assets/*.png"))
 
@@ -1242,11 +1319,28 @@ def test_picture_budget_stop_in_plan_only_mode_is_a_note(workspace: Path, monkey
     cfg.studio.image_usd = 0.10
     work.mkdir(parents=True, exist_ok=True)
     (work / "spend.json").write_text(json.dumps({"usd": cfg.studio.budget_usd - 0.04}), encoding="utf-8")
+    before = (work / "spend.json").read_bytes()
     provider = FakeProvider()
     res = run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), board=_one_picture_board(), provider=provider,
                          plan_only=True, assume_yes=True, confirm=_no_prompt)
-    assert provider.calls == [] and "video" not in res
-    assert "Nothing was generated" in capsys.readouterr().out
+    assert provider.calls == [] and "video" not in res and (work / "spend.json").read_bytes() == before
+    assert "No pictures were generated and nothing was spent on them" in capsys.readouterr().out
+
+
+def test_generation_never_spends_past_what_is_left(workspace: Path):
+    """Second line of defence: even if more pictures turn out to be needed than were estimated (say a cached
+    picture was deleted after the question was answered), generation stops at what is left of the budget."""
+    from sermon_visuals import imagegen
+    from sermon_visuals.studio import assets, plan
+    cfg = load_config(workspace / "config.toml")
+    beats = [plan.Beat(first=i, last=i, scene=f"scene {i}", motion="m", hero=False, key_phrase="") for i in range(5)]
+    shots = [assets.Shot(index=i, start=i * 5.0, end=(i + 1) * 5.0, beat=b) for i, b in enumerate(beats)]
+    assets.assign_paths(shots, workspace / "a", "style", imagegen.content_guard(cfg), "m")
+    provider = FakeProvider()
+    ledger = assets.Ledger(workspace / "spend.json")
+    report = assets.generate_assets(cfg, shots, "style", provider, None, ledger, 0.10, 0.07, workers=3, budget_left=0.25)
+    assert len(provider.calls) == 2 and ledger.data["usd"] == pytest.approx(0.20)
+    assert report.budget_stopped and "budget" in report.budget_stopped
 
 
 def test_picture_budget_within_reach_still_asks(workspace: Path, monkeypatch):

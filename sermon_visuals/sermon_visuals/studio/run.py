@@ -85,6 +85,12 @@ def report_key_phrases(board: plan.Storyboard, words: list[plan.Word], sentences
     if spans is None:
         print("  Attribution could not be checked: there is no edited transcript for this program, so key phrases "
               "were checked against the audio only, not for whether they are his own words.")
+    elif not spans:
+        print("  The edited transcript could not be read, so no key phrase can be confirmed as his own words "
+              "and none will be shown.")
+    elif all(s.kind == attribution.SPEAKER for s in spans):
+        print("  Note: the transcript marks no scripture or quotations, so key phrases could not be checked for "
+              "whether they are his own words or words he reads.")
     shown, dropped = plan.vet_key_phrases(board, words, sentences, spans, layers.cards)
     if not shown and not dropped:
         return
@@ -211,7 +217,7 @@ def run_studio(
     board = plan.repair(board, len(sentences))
     board_path.write_text(board.model_dump_json(indent=2), encoding="utf-8")
     # Words shown as his must be his: key phrases are checked against his own words in the edited transcript.
-    reference = edited_transcript(cfg, stem)
+    reference = edited_transcript(cfg, stem)  # None: there is none; "": there is one but it could not be read
     spans = attribution.split_transcript(reference) if reference is not None else None
 
     # 3. shots, animation choice, budget
@@ -261,7 +267,8 @@ def run_studio(
     provider = provider or make_provider(cfg)
     if n_anim and motion is None:
         motion = assets.OmniMotion(st.motion_model, st.motion_resolution)
-    report = assets.generate_assets(cfg, shots, style, provider, motion, ledger, image_usd, st.video_usd_per_second, st.workers)
+    report = assets.generate_assets(cfg, shots, style, provider, motion, ledger, image_usd, st.video_usd_per_second, st.workers,
+                                    budget_left=budget - ledger.data["usd"])
 
     # 5. render
     scale = 0.5 if preview else 1.0
@@ -281,6 +288,8 @@ def run_studio(
     print(f"  Total spent on this clip so far: ${ledger.data['usd']:.2f}")
     if report.motion_stopped:
         print(f"  Note: {report.motion_stopped}")
+    if report.budget_stopped:
+        print(f"  Note: {report.budget_stopped}")
     clip_failures = 0 if report.motion_stopped else len(report.clip_failures)
     if report.image_failures or clip_failures:
         print(f"  Note: {len(report.image_failures)} picture(s) and {clip_failures} animation(s) failed and were covered by neighbours or stills. Run again to retry them.")

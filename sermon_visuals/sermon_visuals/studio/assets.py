@@ -193,7 +193,7 @@ class OverBudget(RuntimeError):
         self.cost, self.left = cost, max(left, 0.0)
         super().__init__(
             f"The pictures would cost about ${cost:.2f}, but only ${self.left:.2f} is left of the budget, even with every "
-            "planned animation turned back into a still. Nothing was generated and nothing was spent.")
+            "planned animation turned back into a still. No pictures were generated and nothing was spent on them.")
 
 
 def fit_to_budget(shots: list[Shot], budget: float, image_usd: float, video_usd_per_second: float, storyboard_usd: float) -> int:
@@ -202,12 +202,13 @@ def fit_to_budget(shots: list[Shot], budget: float, image_usd: float, video_usd_
     nothing is generated whatever the caller was told to assume."""
     dropped = 0
     animated = sorted((s for s in shots if s.animate and s.clip and not s.clip.exists()), key=lambda s: (s.beat.hero, -s.clip_seconds))
-    while animated and estimate(shots, image_usd, video_usd_per_second, storyboard_usd).total > budget + PENNY_FRACTION:
+    # Written as "not fits" so a nonsense figure (NaN from a damaged spend.json) refuses instead of slipping through.
+    while animated and not estimate(shots, image_usd, video_usd_per_second, storyboard_usd).total <= budget + PENNY_FRACTION:
         s = animated.pop(0)
         s.animate, s.clip, s.clip_seconds = False, None, 0
         dropped += 1
     cost = estimate(shots, image_usd, video_usd_per_second, storyboard_usd).total
-    if cost > budget + PENNY_FRACTION:
+    if not cost <= budget + PENNY_FRACTION:
         raise OverBudget(cost, budget)
     return dropped
 
@@ -261,6 +262,7 @@ class AssetReport:
     image_failures: list[int] = field(default_factory=list)
     clip_failures: list[int] = field(default_factory=list)
     motion_stopped: str = ""  # plain-English reason animation was abandoned for the whole run, if it was
+    budget_stopped: str = ""  # plain-English note if paid work was skipped because the budget would be passed
 
 
 def generate_assets(
@@ -273,9 +275,26 @@ def generate_assets(
     image_usd: float,
     video_usd_per_second: float,
     workers: int = 4,
+    budget_left: float | None = None,
 ) -> AssetReport:
+    """`budget_left` is what may still be spent in this run. Each picture and clip reserves its cost before it is
+    asked for, and is skipped if that would pass the budget, so more work than was estimated (a cached file
+    deleted after the question was answered, say) can never be paid for."""
     report = AssetReport()
     lock = threading.Lock()
+    reserved = 0.0
+
+    def reserve(cost: float) -> bool:
+        nonlocal reserved
+        if budget_left is None:
+            return True
+        with lock:
+            if not reserved + cost <= budget_left + PENNY_FRACTION:
+                report.budget_stopped = ("Some pictures or animations were skipped because making them would have gone past "
+                                         "what is left of the budget; neighbouring pictures or stills were used instead.")
+                return False
+            reserved += cost
+            return True
     todo: dict[Path, Shot] = {}
     for s in shots:
         if s.image and not s.image.exists():
@@ -287,6 +306,10 @@ def generate_assets(
 
     def draw(s: Shot, refs: list[Path]) -> None:
         prompt = image_prompt(style, s.beat.scene, guard)
+        if not reserve(image_usd):
+            with lock:
+                report.image_failures.append(s.index)
+            return
         try:
             data = _retry(lambda: provider.generate(prompt, "16:9", refs[-3:]))
             s.image.parent.mkdir(parents=True, exist_ok=True)
@@ -325,7 +348,8 @@ def generate_assets(
         raise RuntimeError("animated shots were planned but no motion provider is configured")
 
     def move(s: Shot) -> None:
-        if report.motion_stopped:  # the animation model is missing; do not try (or pay for) any more clips
+        if report.motion_stopped or not reserve(s.clip_seconds * video_usd_per_second):
+            # the animation model is missing, or the clip would pass the budget: do not try (or pay for) it
             s.animate, s.clip = False, None
             with lock:
                 report.clip_failures.append(s.index)
