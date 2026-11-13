@@ -447,7 +447,7 @@ def test_studio_animation_choice_and_budget(tmp_path: Path):
     chosen = [s.index for s in shots if s.animate]
     assert len(chosen) == 5 and {0, 3, 6, 9} <= set(chosen)  # heroes first
     assert all(s.clip_seconds == 8 for s in shots if s.animate)
-    assets.assign_paths(shots, tmp_path, "style", "neg", False, "m")
+    assets.assign_paths(shots, tmp_path, "style", "guard", "m")
     est = assets.estimate(shots, 0.10, 0.07, 0.0)
     assert est.new_images == 10 and est.new_clip_seconds == 40 and abs(est.total - (1.0 + 2.8)) < 1e-6
     dropped = assets.fit_to_budget(shots, 2.0, 0.10, 0.07, 0.0)
@@ -495,3 +495,80 @@ def test_studio_end_to_end_offline(workspace: Path):
     res3 = run_studio(cfg, "btw-0001", level=5, minutes=0.2, preview=True, provider=assets.DraftArt(), motion=FakeMotion(), words=words,
                       board=_studio_board(), confirm=lambda q: "n")
     assert "video" not in res3
+
+
+# ---------- content guards ----------
+
+NO_SCRIPT = "No written words, letters, script, inscriptions or scroll text in any language"
+NO_DIVINE = "Do not depict Jesus, God, or any divine figure in any form, including as an infant."
+
+
+def _all_prompts(cfg) -> dict[str, str]:
+    """The text each of the five prompt builders would send to an image or video model."""
+    from sermon_visuals import illustrate, imagegen
+    from sermon_visuals.studio import assets, plan
+    beat = plan.Beat(first=0, last=0, scene="A scroll covered in inscribed script.", motion="The camera drifts.", hero=False, key_phrase="")
+    guard = imagegen.content_guard(cfg)
+    return {
+        "build_prompt": imagegen.build_prompt(cfg, "A hillside at dawn."),
+        "recompose_prompt": imagegen.recompose_prompt(cfg, "1:1"),
+        "sketch_prompt": illustrate.sketch_prompt(cfg, "A lamp on a table."),
+        "image_prompt": assets.image_prompt("Bold graphic style.", beat.scene, guard),
+        "motion_prompt": assets.motion_prompt(beat, guard),
+    }
+
+
+def test_every_prompt_carries_the_content_guards(workspace: Path):
+    cfg = load_config(workspace / "config.toml")
+    assert cfg.style.negative and cfg.style.avoid and not cfg.style.depict_christ
+    avoid = "Do not show: " + "; ".join(cfg.style.avoid) + "."
+    for name, text in _all_prompts(cfg).items():
+        for guard in (cfg.style.negative, NO_SCRIPT, NO_DIVINE, avoid):
+            assert guard in text, f"{name} is missing: {guard}"
+
+
+def test_content_guard_fallback_and_depict_switch(workspace: Path):
+    from sermon_visuals import imagegen
+    cfg = load_config(workspace / "config.toml")
+    cfg.style.negative = ""
+    for name, text in _all_prompts(cfg).items():
+        assert imagegen.NO_TEXT_FALLBACK in text and NO_SCRIPT in text and NO_DIVINE in text, name
+    cfg = load_config(workspace / "config.toml")
+    cfg.style.depict_christ = True
+    for name, text in _all_prompts(cfg).items():
+        assert NO_DIVINE not in text and "divine" not in text, name
+        assert cfg.style.negative in text and NO_SCRIPT in text and "Do not show: " in text, name
+    cfg.style.avoid = []
+    assert all("Do not show" not in t for t in _all_prompts(cfg).values())
+
+
+def test_studio_sends_guards_and_cache_key_follows_them(workspace: Path, monkeypatch):
+    from sermon_visuals import imagegen
+    from sermon_visuals.studio import assets, plan
+    cfg = load_config(workspace / "config.toml")
+    beats = [plan.Beat(first=i, last=i, scene=f"scene {i}", motion="m", hero=True, key_phrase="") for i in range(2)]
+    shots = [assets.Shot(index=i, start=i * 5.0, end=(i + 1) * 5.0, beat=b, animate=True, clip_seconds=5) for i, b in enumerate(beats)]
+    assets.assign_paths(shots, workspace / "a", "style", imagegen.content_guard(cfg), "m")
+    first = [(s.image, s.clip) for s in shots]
+
+    sent: list[str] = []
+
+    class Pictures(assets.DraftArt):
+        def generate(self, prompt, aspect, references):
+            sent.append(prompt)
+            return super().generate(prompt, aspect, references)
+
+    class Motion:
+        model = "m"
+
+        def animate(self, image, prompt, seconds):
+            sent.append(prompt)
+            return b"clip"
+
+    assets.generate_assets(cfg, shots, "style", Pictures(), Motion(), assets.Ledger(workspace / "spend.json"), 0.1, 0.07, workers=1)
+    assert len(sent) == 4 and all(NO_DIVINE in p and NO_SCRIPT in p and cfg.style.negative in p and "Do not show: " in p for p in sent)
+
+    # Changing any guard changes where the picture and clip are cached, so they are drawn again with the new wording.
+    cfg.style.avoid = cfg.style.avoid + ["candles"]
+    assets.assign_paths(shots, workspace / "a", "style", imagegen.content_guard(cfg), "m")
+    assert all(s.image != a and s.clip != b for s, (a, b) in zip(shots, first))

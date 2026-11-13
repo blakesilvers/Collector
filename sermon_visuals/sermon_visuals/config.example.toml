@@ -28,7 +28,8 @@ No people's faces in close-up. Nothing cartoonish, nothing glossy or neon."""
 negative = "Absolutely no text, letters, numbers, logos, watermarks or signatures anywhere in the image."
 # Reference images (relative to assets_dir) sent with every request to anchor the look. Optional.
 reference_images = []
-# Guardrails handed to the brief extractor. Edit to match the ministry's convictions.
+# Guardrails handed to the brief extractor and added to every picture and animation prompt.
+# Edit to match the ministry's convictions.
 depict_christ = false
 avoid = ["crosses used as decoration", "stained glass clichés", "angels with wings", "halos", "modern church interiors"]
 

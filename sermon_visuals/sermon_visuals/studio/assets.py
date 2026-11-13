@@ -19,7 +19,7 @@ from typing import Protocol
 from PIL import Image, ImageDraw, ImageFont
 
 from ..config import Config
-from ..imagegen import ImageProvider
+from ..imagegen import ImageProvider, content_guard
 from .plan import Beat
 
 log = logging.getLogger(__name__)
@@ -112,16 +112,16 @@ class DraftArt:
         return out.getvalue()
 
 
-def image_prompt(style: str, negative: str, scene: str, depict_christ: bool) -> str:
-    guard = "" if depict_christ else " Do not depict Jesus, God, or any divine figure."
-    return f"{style} {negative}{guard} SCENE: {scene.strip()}"
+def image_prompt(style: str, scene: str, guard: str) -> str:
+    """`guard` is imagegen.content_guard(cfg). The scene stays last, after "SCENE:", so the draft art can find it."""
+    return f"{style} {guard} SCENE: {scene.strip()}"
 
 
-def motion_prompt(beat: Beat) -> str:
+def motion_prompt(beat: Beat, guard: str) -> str:
     return (
         f"Animate this illustration. {beat.motion.strip()} Keep exactly the same art style, colours, characters and composition "
         "as the image. Smooth, gentle, continuous motion with a slow cinematic camera move. No cuts. No text, captions, titles or logos. "
-        "No speech or narration."
+        f"No speech or narration. {guard}"
     )
 
 
@@ -166,11 +166,13 @@ class Estimate:
         return self.image_usd + self.video_usd + self.storyboard_usd
 
 
-def assign_paths(shots: list[Shot], assets_dir: Path, style: str, negative: str, depict_christ: bool, motion_model: str) -> None:
+def assign_paths(shots: list[Shot], assets_dir: Path, style: str, guard: str, motion_model: str) -> None:
+    """Name each picture and clip after the exact prompt text it is made from, so any change to the
+    scene, style or content guard makes a new file instead of reusing one drawn under older rules."""
     for s in shots:
-        prompt = image_prompt(style, negative, s.beat.scene, depict_christ)
+        prompt = image_prompt(style, s.beat.scene, guard)
         s.image = assets_dir / f"img_{_key(prompt)}.png"
-        s.clip = assets_dir / f"clip_{_key(prompt, s.beat.motion, str(s.clip_seconds), motion_model)}.mp4" if s.animate else None
+        s.clip = assets_dir / f"clip_{_key(prompt, motion_prompt(s.beat, guard), str(s.clip_seconds), motion_model)}.mp4" if s.animate else None
 
 
 def estimate(shots: list[Shot], image_usd: float, video_usd_per_second: float, storyboard_usd: float) -> Estimate:
@@ -250,9 +252,10 @@ def generate_assets(
             todo.setdefault(s.image, s)
     pending = list(todo.values())
     base_refs = list(cfg.illustrate.reference_images) + list(cfg.style.reference_images)
+    guard = content_guard(cfg)
 
     def draw(s: Shot, refs: list[Path]) -> None:
-        prompt = image_prompt(style, cfg.style.negative, s.beat.scene, cfg.style.depict_christ)
+        prompt = image_prompt(style, s.beat.scene, guard)
         try:
             data = _retry(lambda: provider.generate(prompt, "16:9", refs[-3:]))
             s.image.parent.mkdir(parents=True, exist_ok=True)
@@ -292,7 +295,7 @@ def generate_assets(
 
     def move(s: Shot) -> None:
         try:
-            data = _retry(lambda: motion.animate(s.image, motion_prompt(s.beat), s.clip_seconds), attempts=2, wait=8.0)
+            data = _retry(lambda: motion.animate(s.image, motion_prompt(s.beat, guard), s.clip_seconds), attempts=2, wait=8.0)
             s.clip.write_bytes(data)
             ledger.add(s.clip_seconds * video_usd_per_second, clip_seconds=s.clip_seconds)
             with lock:

@@ -13,7 +13,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from .config import Config
-from .imagegen import ImageProvider, make_provider
+from .imagegen import ImageProvider, content_guard, make_provider
 from .verses import Overlay, Scripture, overlay_filter, validate_scriptures
 from .video import ffmpeg_available
 
@@ -122,7 +122,7 @@ def plan_segments(cfg: Config, audio: Path, transcript: str) -> tuple[list[Segme
 
 
 def sketch_prompt(cfg: Config, scene: str) -> str:
-    return " ".join(p for p in [cfg.illustrate.style, scene.strip(), cfg.style.negative] if p)
+    return " ".join(p for p in [cfg.illustrate.style, scene.strip(), content_guard(cfg)] if p)
 
 
 def draw_segments(cfg: Config, segments: list[Segment], out_dir: Path, provider: ImageProvider | None = None) -> list[Path]:

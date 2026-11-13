@@ -19,10 +19,28 @@ ASPECTS = {
 }
 
 
-def build_prompt(cfg: Config, concept_prompt: str) -> str:
-    parts = [cfg.style.prompt, concept_prompt.strip(), cfg.style.negative]
+NO_TEXT_FALLBACK = "No text, letters, numbers, logos or watermarks anywhere in the image."
+NO_SCRIPT = (
+    "No written words, letters, script, inscriptions or scroll text in any language; "
+    "show scrolls, books, tablets and signs closed, blank or turned away."
+)
+NO_DIVINE = "Do not depict Jesus, God, or any divine figure in any form, including as an infant."
+
+
+def content_guard(cfg: Config) -> str:
+    """The rules every image and video prompt ends with: no text of any kind, no depiction of God
+    (unless depict_christ is switched on) and nothing on the config's avoid list."""
+    parts = [cfg.style.negative.strip() or NO_TEXT_FALLBACK, NO_SCRIPT]
     if not cfg.style.depict_christ:
-        parts.append("Do not depict Jesus, God, or any divine figure.")
+        parts.append(NO_DIVINE)
+    avoid = [a.strip() for a in cfg.style.avoid if a.strip()]
+    if avoid:
+        parts.append("Do not show: " + "; ".join(avoid) + ".")
+    return " ".join(parts)
+
+
+def build_prompt(cfg: Config, concept_prompt: str) -> str:
+    parts = [cfg.style.prompt, concept_prompt.strip(), content_guard(cfg)]
     return " ".join(p for p in parts if p)
 
 
@@ -30,7 +48,7 @@ def recompose_prompt(cfg: Config, aspect: str) -> str:
     return (
         f"Recompose this exact scene as a {aspect} image. Keep the same subject, palette, lighting and painterly style. "
         "Keep the main subject fully in frame and roughly centred, and extend the scene naturally to fill the new frame. "
-        + cfg.style.negative
+        + content_guard(cfg)
     )
 
 

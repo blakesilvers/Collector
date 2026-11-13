@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .. import compose, verses
 from ..config import Config
-from ..imagegen import ImageProvider, make_provider
+from ..imagegen import ImageProvider, content_guard, make_provider
 from ..transcribe import find_audio, get_transcript
 from . import assets, plan, render
 from .levels import LEVEL_BLURBS, STYLES, layers_for
@@ -143,13 +143,14 @@ def run_studio(
     # 3. shots, animation choice, budget
     shots = shots_from(board, sentences, length)
     style = STYLES.get(st.style, st.style)
+    guard = content_guard(cfg)
     assets.choose_animated(shots, 0.0 if draft else layers.motion_share)
     assets_dir = work / ("draft_assets" if draft else "assets")
-    assets.assign_paths(shots, assets_dir, style, cfg.style.negative, cfg.style.depict_christ, st.motion_model)
+    assets.assign_paths(shots, assets_dir, style, guard, st.motion_model)
     image_usd = 0.0 if draft else st.image_usd
     budget = max(3.0, st.budget_usd * length / max(full, 1.0))
     dropped = assets.fit_to_budget(shots, budget - ledger.data["usd"], image_usd, st.video_usd_per_second, 0.0)
-    assets.assign_paths(shots, assets_dir, style, cfg.style.negative, cfg.style.depict_christ, st.motion_model)
+    assets.assign_paths(shots, assets_dir, style, guard, st.motion_model)
     est = assets.estimate(shots, image_usd, st.video_usd_per_second, 0.0)
     n_anim = sum(1 for s in shots if s.animate)
     print(f"  {len(shots)} shots ({n_anim} animated), {len(board.chapters)} chapters, {len(board.readings)} scripture readings, "
