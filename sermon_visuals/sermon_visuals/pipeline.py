@@ -53,7 +53,8 @@ def stage_brief(cfg: Config, m: Manifest) -> None:
     m.brief = str(path)
     bad = [q.text for q in m.quote_checks if not q.verified]
     if bad:
-        log.warning("%s: %d quote(s) not found verbatim in transcript", m.stem, len(bad))
+        log.warning("%s: %d quote(s) not found word for word among the speaker's own words in the transcript; "
+                    "they will not be put on cards", m.stem, len(bad))
 
 
 def stage_images(cfg: Config, m: Manifest, provider: imagegen.ImageProvider | None = None) -> None:
@@ -100,6 +101,12 @@ def stage_compose(cfg: Config, m: Manifest, provider: imagegen.ImageProvider | N
     attribution = f"— {cfg.ministry.speaker}" if cfg.ministry.speaker else ""
     subtitle = " · ".join(x for x in [cfg.ministry.speaker, brief.primary_scripture] if x)
     m.cards = {}
+    # Check every quote again against the speaker's own words in the transcript as it is now, so a stale check or a
+    # quote edited into brief.json by hand can never reach a card. No transcript: no quote cards.
+    transcript = Path(m.transcript) if m.transcript else None
+    m.quote_checks = (extract.verify_quotes(brief, transcript.read_text(encoding="utf-8"))
+                      if transcript and transcript.exists() else [])
+    his = {c.text for c in m.quote_checks if c.verified}
     for name in cfg.compose.formats:
         fmt = compose.FORMATS[name]
         if name == "youtube":
@@ -118,9 +125,8 @@ def stage_compose(cfg: Config, m: Manifest, provider: imagegen.ImageProvider | N
         else:
             fmt_art = art_for_format(cfg, m, fmt, provider)
             for qi, q in enumerate(brief.pull_quotes, start=1):
-                check = next((c for c in m.quote_checks if c.text == q.text), None)
-                if check and not check.verified:
-                    continue  # never put an unverified quote on a card
+                if q.text not in his:
+                    continue  # never put a quote on a card unless it is his own words
                 out = compose.render_quote_card(
                     fmt_art, cards_dir / f"quote{qi}_{name}.png", fmt, fonts,
                     quote=q.text, attribution=attribution, program=cfg.ministry.program_name, logo=cfg.ministry.logo,

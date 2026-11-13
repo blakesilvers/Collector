@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import logging
-import re
-import unicodedata
 from importlib import resources
 from pathlib import Path
 
+from . import attribution
 from .config import Config
 from .models import Brief, QuoteCheck
 
@@ -18,23 +17,14 @@ def _system_prompt() -> str:
     return resources.files("sermon_visuals.prompts").joinpath("extract_system.md").read_text(encoding="utf-8")
 
 
-def _normalize(text: str) -> str:
-    """Lower-case, strip accents and punctuation, collapse whitespace. Used only for quote matching."""
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    text = text.lower().replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
-    text = re.sub(r"[^a-z0-9' ]+", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
+_normalize = attribution.normalize  # lower-case, strip accents and punctuation; used only for quote matching
 
 
 def verify_quotes(brief: Brief, transcript: str) -> list[QuoteCheck]:
-    """A quote passes only if its normalized text appears verbatim in the normalized transcript."""
-    haystack = _normalize(transcript)
-    checks = []
-    for q in brief.pull_quotes:
-        needle = _normalize(q.text)
-        checks.append(QuoteCheck(text=q.text, verified=bool(needle) and needle in haystack))
-    return checks
+    """A quote passes only if its normalized text appears verbatim inside one stretch of the speaker's own
+    words: never in a scripture block, another author's quotation or a [bracketed] editor's note."""
+    spans = attribution.split_transcript(transcript)
+    return [QuoteCheck(text=q.text, verified=attribution.is_his(q.text, spans)) for q in brief.pull_quotes]
 
 
 def _brief_request(cfg: Config, transcript: str) -> str:

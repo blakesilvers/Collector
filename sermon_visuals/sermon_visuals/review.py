@@ -49,7 +49,7 @@ def build_review(output_dir: Path, manifests: list[Manifest]) -> Path:
             parts.append(f"<div class=flag>{html.escape(flag)}</div>")
         for q in m.quote_checks:
             cls = "" if q.verified else " class=unverified"
-            note = "" if q.verified else " <b>(not found verbatim in transcript, check before use)</b>"
+            note = "" if q.verified else " <b>(not found word for word among the speaker's own words in the transcript, so it is not put on a card)</b>"
             parts.append(f"<blockquote{cls}>{html.escape(q.text)}{note}</blockquote>")
         if m.art:
             parts.append("<div class=grid>")

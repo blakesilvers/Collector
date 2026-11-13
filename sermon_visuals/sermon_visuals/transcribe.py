@@ -35,6 +35,22 @@ def pdf_text(pdf: Path) -> str:
     return "\n".join(lines).strip()
 
 
+def edited_transcript(cfg: Config, stem: str) -> str | None:
+    """The ministry's edited transcript (programs/<stem>.txt, else programs/<stem>.pdf), or None if there is
+    none. Never transcribes and never spends: a machine transcript of the audio cannot tell his words from
+    scripture or a quotation he reads, so it is no use for checking whose words are whose."""
+    txt = find_sidecar(cfg.paths.input_dir, stem, ".txt")
+    if txt:
+        return txt.read_text(encoding="utf-8")
+    pdf = find_sidecar(cfg.paths.input_dir, stem, ".pdf")
+    if pdf:
+        try:
+            return pdf_text(pdf) or None
+        except Exception:  # unreadable PDF: treat as no transcript, so the check is reported as not done
+            return None
+    return None
+
+
 def get_transcript(cfg: Config, stem: str, audio: Path | None, out_dir: Path) -> Path:
     """Return a path to a plain-text transcript: sidecar .txt, else sidecar .pdf, else cached, else transcribe."""
     existing = find_sidecar(cfg.paths.input_dir, stem, ".txt")

@@ -987,3 +987,213 @@ def test_storyboard_stop_reasons_are_plain(workspace: Path):
         with pytest.raises(plan.StoryboardFailed) as info:
             plan.make_storyboard(cfg, sentences, "", layers, client=_FakeClaude(_FakeStream(message=msg)))
         assert words in str(info.value) and info.value.charged
+
+
+# ---------- attribution: only his own words are shown as his ----------
+
+# Copied from the ministry's edited transcript of "About Christmas" (programs/about_christmas.txt), in its own layout:
+# a reading of another author's article (lines 18-34 there) that ends with a credit line, scripture blocks with a
+# reference line and a version label, verse lines with no reference line, and [bracketed] notes. The real file
+# uses no-break spaces between words and the Greek question mark (U+037E) for semicolons.
+EXCERPT_LINES = """About Christmas
+by Ronald L. Dart
+So there's not a hint in the New Testament about believing in Christmas or celebrating Jesus' birth. It
+could be argued that this fact does not militate against modern celebration, but that's not what interests
+me at this point. We can argue about that later. My question is what the first Christians believed and
+practiced relative to Jesus' nativity. (The word “nativity” just means the circumstances of one's birth.)
+Now, I came across an interesting item published by the American Presbyterian Church. Apparently it
+was published shortly after last Christmas. They said:
+And they are, of course, dead right. That said, though, I think we can safely assume that the first
+Christians knew when Jesus was born. We don't. They did not see fit to record it for us, but I think they
+must've known roughly. And the reason I say that is because Luke records events that, at least
+seasonally, place Jesus' birth. Luke begins his gospel with the story of another birth. (And you might
+wonder, in a way , “Why?”, and we'll talk about that.) His name was John the Baptist. The story begins
+in the very first verse of Luke 1:
+In the recent holiday season many Christians have been merrily, joyously, and some perhaps
+even seriously, solemnly, and reverently, celebrating the birth of Jesus Christ. However, one
+wonders how many gave any significant thought to the issue of when was Christ born. If they
+had they would quickly have discovered that despite all the mythology and legend that
+surrounds this holiday season, we really do not know when Christ was born. We know neither
+the year, nor the month, nor the day. For that matter we don’t know the time of day either. God
+in his wisdom has chosen not to reveal to us anything concerning the exact date of this
+momentous event so long foretold by the prophets and awaited by the faithful.
+American Presbyterian Church  Christ's Birth
+Now, before I go on, I take this to mean that we can safely consider that in Luke's gospel we have a
+statement of things that were widely reported among the first Christians. “Many have taken in hand to
+set forth in order a declaration of those things which are most surely believed.” So Luke, then, has
+taken pen in hand and pad (or whatever he used for writing tools) and he—good reporter, a good
+historian—put the whole thing together for us.
+Luke 1
+1 For as much as many have taken in hand to set forth in order a declaration of those things
+which are most surely believed among us,
+AKJV
+Luke 1
+2 Even as they delivered them to us, which from the beginning were eyewitnesses, and
+ministers of the word;
+AKJV
+Now, we can add to this that many Jewish rabbis teach that the only example of a birthday in the Bible
+is one observed in honor of Pharaoh [Genesis 40], and since the Jews were exhorted against observing
+the customs of the Egyptians, it was their custom not to observe birthdays.
+Luke 1
+8 And it came to pass, that while he executed the priest's office before God in the order of his
+course,
+9 According to the custom of the priest's office, his lot [his job] was to burn incense when he
+went into the temple of the Lord. [That's his job. When he went into the Temple, he burned
+incense.]
+AKJV
+Mind you, the Word became flesh and dwelt among us. The Greek word for “dwelt” [skénoó, σκηνόω, Strong's G4637] could just as
+easily have been translated “tabernacled among us.” Why is that important? I'll explain.
+Why is all this important? Because it was important for everyone to know that Jesus came into the
+world just like they did. He was born. He was a baby. You could actually pick him and hold him.
+5 To be taxed with Mary his espoused wife, being great with child.
+6 And so it was, that, while they were there, the days were accomplished that she should be
+delivered.
+Luke 2
+8 And there were in the same country shepherds abiding in the field, keeping watch over their
+flock by night.
+AKJV"""
+EXCERPT = EXCERPT_LINES.replace(" ", " ").replace("word;", "word;")
+
+ARTICLE_PHRASES = ["we really do not know when Christ was born", "so long foretold by the prophets"]
+HIS_PHRASES = ["not a hint in the New Testament", "the first Christians knew when Jesus was born",
+               "at least seasonally, place Jesus' birth", "were widely reported among the first Christians",
+               "it was their custom not to observe birthdays", "Jesus came into the world just like they did",
+               "could just as easily have been translated"]
+
+
+def test_splitter_keeps_a_credited_article_off_his_words():
+    from sermon_visuals import attribution as A
+    spans = A.split_transcript(EXCERPT)
+    for phrase in ARTICLE_PHRASES:  # the real case: a live plan chose both of these as his key phrases
+        assert A.whose(phrase, spans) == A.OTHER_AUTHOR, phrase
+    for phrase in HIS_PHRASES:
+        assert A.whose(phrase, spans) == A.SPEAKER, phrase
+    assert A.whose("Presbyterian Church Christ's Birth", spans) == A.OTHER_AUTHOR  # the credit line itself
+    assert A.whose("words he never said", spans) is None
+    assert A.whose("About Christmas by Ronald L. Dart", spans) != A.SPEAKER  # title and byline are not spoken
+
+
+def test_splitter_scripture_blocks_are_not_his():
+    from sermon_visuals import attribution as A
+    spans = A.split_transcript(EXCERPT)
+    assert A.whose("which from the beginning were eyewitnesses", spans) == A.SCRIPTURE
+    assert A.whose("ministers of the word", spans) == A.SCRIPTURE  # ends in U+037E
+    assert A.whose("keeping watch over their flock by night", spans) == A.SCRIPTURE
+    assert A.whose("being great with child", spans) == A.SCRIPTURE  # verse lines with no reference line above
+    # also quoted inline inside his paragraph, in quotation marks: still not his
+    assert A.whose("many have taken in hand to set forth in order", spans) != A.SPEAKER
+
+
+def test_splitter_bracketed_notes_are_not_his():
+    from sermon_visuals import attribution as A
+    spans = A.split_transcript(EXCERPT)
+    assert A.whose("Genesis 40", spans) == A.EDITOR_NOTE
+    assert A.whose("Strong's G4637", spans) == A.EDITOR_NOTE
+    assert A.whose("when he went into the Temple, he burned incense", spans) != A.SPEAKER
+    kinds = {s.kind for s in spans}
+    assert kinds == {A.SPEAKER, A.SCRIPTURE, A.OTHER_AUTHOR, A.EDITOR_NOTE}
+
+
+def test_pull_quotes_must_be_his_own_words():
+    brief = fake_brief().model_copy(update={"pull_quotes": [
+        PullQuote(text="We really do not know when Christ was born.", why="from the article he reads"),
+        PullQuote(text="Which from the beginning were eyewitnesses", why="scripture"),
+        PullQuote(text="So there's not a hint in the New Testament about believing in Christmas", why="his"),
+    ]})
+    assert [c.verified for c in extract.verify_quotes(brief, EXCERPT)] == [False, False, True]
+
+
+def _words_from(text: str):
+    from sermon_visuals.studio.plan import Word
+    words, t = [], 0.2
+    for w in text.split():
+        words.append(Word(w=w, s=round(t, 2), e=round(t + 0.25, 2)))
+        t += 0.32 + (0.5 if w[-1] in ".?" else 0)
+    return words
+
+
+SPOKEN = ("So there's not a hint in the New Testament about believing in Christmas. "
+          "If they had they would quickly have discovered that we really do not know when Christ was born. "
+          "The story begins in the very first verse of Luke.")
+
+
+def _attribution_board():
+    from sermon_visuals.studio import plan
+    return plan.Storyboard(title="About Christmas", chapters=[], readings=[], beats=[
+        plan.Beat(first=0, last=0, scene="A shelf of rolled scrolls.", motion="m", hero=False, key_phrase="not a hint in the New Testament"),
+        plan.Beat(first=1, last=1, scene="Misty hills.", motion="m", hero=False, key_phrase="we really do not know when Christ was born"),
+        plan.Beat(first=2, last=2, scene="A lamp.", motion="m", hero=False, key_phrase="words he never said"),
+    ])
+
+
+def test_key_phrases_need_his_words_and_the_audio():
+    from sermon_visuals import attribution as A
+    from sermon_visuals.studio import plan
+    words = _words_from(SPOKEN)
+    sents = plan.sentences_from_words(words)
+    board = _attribution_board()
+    timed, dropped = plan.vet_key_phrases(board, words, sents, A.split_transcript(EXCERPT), cards=True)
+    assert list(timed) == [0]
+    assert [(i, why) for i, _, why in dropped] == [(1, A.OTHER_AUTHOR), (2, None)]  # None: nowhere in his words
+    # with no reference transcript the old behaviour stands: the audio check alone
+    timed, dropped = plan.vet_key_phrases(board, words, sents, None, cards=True)
+    assert list(timed) == [0, 1] and [i for i, _, _ in dropped] == [2]
+
+
+def test_timeline_shows_only_his_key_phrases(tmp_path: Path):
+    from sermon_visuals import attribution as A
+    from sermon_visuals.studio import plan, run
+    from sermon_visuals.studio.levels import layers_for
+    words = _words_from(SPOKEN)
+    sents = plan.sentences_from_words(words)
+    board = _attribution_board()
+    duration = words[-1].e + 1
+    shots = run.shots_from(board, sents, duration)
+    tl = run.build_timeline(board, words, sents, duration, shots, layers_for(4, {}), tmp_path, 640, 360, 55, 4.0,
+                            spans=A.split_transcript(EXCERPT))
+    shown = [" ".join(w for w, _ in c.words) for c in tl.callouts]
+    assert shown == ["not a hint in the New Testament"]
+
+
+def test_studio_prints_the_attribution_check(workspace: Path, monkeypatch, capsys):
+    cfg, run, calls, work = _gated_studio(workspace, monkeypatch)
+    (workspace / "programs" / "btw-0001.txt").write_text(EXCERPT, encoding="utf-8")
+    run.run_studio(cfg, "btw-0001", level=4, words=_words_from(SPOKEN), board=_attribution_board(), plan_only=True,
+                   confirm=_no_prompt)
+    out = capsys.readouterr().out
+    assert "1 will be shown, 2 dropped" in out
+    assert "we really do not know when Christ was born" in out and "another author" in out
+    assert "could not be checked" not in out
+    (workspace / "programs" / "btw-0001.txt").unlink()
+    run.run_studio(cfg, "btw-0001", level=4, words=_words_from(SPOKEN), board=_attribution_board(), plan_only=True,
+                   confirm=_no_prompt)
+    out = capsys.readouterr().out
+    assert sum("could not be checked" in line for line in out.splitlines()) == 1
+    assert "2 will be shown, 1 dropped" in out
+
+
+def test_quote_cards_recheck_against_his_words(workspace: Path, monkeypatch):
+    """Cards are made only from quotes that are his own words in the transcript as it is now: not from a stale
+    check made under the old whole-transcript rule, and not from a quote edited into brief.json by hand."""
+    (workspace / "programs" / "btw-0001.txt").write_text(EXCERPT, encoding="utf-8")
+    brief = fake_brief().model_copy(update={"pull_quotes": [
+        PullQuote(text="So there's not a hint in the New Testament about believing in Christmas", why="his"),
+        PullQuote(text="We really do not know when Christ was born.", why="the article he reads"),
+        PullQuote(text="So long foretold by the prophets", why="added to brief.json by hand"),
+    ]})
+    monkeypatch.setattr(extract, "extract_brief", lambda cfg, text: brief)
+    monkeypatch.setattr(pipeline.imagegen, "make_provider", lambda cfg: FakeProvider())
+    cfg = load_config(workspace / "config.toml")
+    m = pipeline.run_program(cfg, "btw-0001", ["transcript", "brief", "images"])
+    from sermon_visuals.models import QuoteCheck
+    m.quote_checks = [QuoteCheck(text=q.text, verified=True) for q in brief.pull_quotes[:2]]  # stale: all passed
+    pipeline.stage_compose(cfg, m, FakeProvider())
+    assert {k for k in m.cards if k.startswith("quote")} == {"quote1_square", "quote1_vertical"}
+    assert [c.verified for c in m.quote_checks] == [True, False, False]
+
+
+def test_storyboard_prompt_states_the_attribution_rule(workspace: Path):
+    from sermon_visuals.studio import plan
+    text = " ".join(plan.SYSTEM.split())
+    for needle in ("scripture", "another author", "[bracketed]", "leave it empty"):
+        assert needle in text, needle

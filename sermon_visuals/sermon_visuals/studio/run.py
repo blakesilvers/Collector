@@ -8,10 +8,10 @@ import subprocess
 from dataclasses import asdict
 from pathlib import Path
 
-from .. import compose, verses
+from .. import attribution, compose, verses
 from ..config import Config
 from ..imagegen import ImageProvider, content_guard, make_provider
-from ..transcribe import find_audio, get_transcript
+from ..transcribe import edited_transcript, find_audio, get_transcript
 from . import assets, plan, render
 from .levels import LEVEL_BLURBS, STYLES, layers_for
 
@@ -30,7 +30,10 @@ def studio_dir(cfg: Config, stem: str, start: float, minutes: float | None) -> P
 
 
 def build_timeline(board: plan.Storyboard, words: list[plan.Word], sentences: list[plan.Sentence], duration: float,
-                   shots: list[assets.Shot], layers, overlay_dir: Path, W: int, H: int, max_words: int, min_page_seconds: float) -> render.Timeline:
+                   shots: list[assets.Shot], layers, overlay_dir: Path, W: int, H: int, max_words: int, min_page_seconds: float,
+                   *, spans: list[attribution.Span] | None) -> render.Timeline:
+    """`spans` is the reference transcript split by attribution.split_transcript, or None when there is none
+    (then key phrases are checked against the audio only)."""
     starts = {s.beat.first: s.start for s in shots}
     # scripture readings -> overlay pages
     scriptures = []
@@ -41,7 +44,7 @@ def build_timeline(board: plan.Storyboard, words: list[plan.Word], sentences: li
     scriptures = verses.validate_scriptures(scriptures, duration)
     fonts = compose.Fonts.resolve()
     overlays = verses.build_overlays(scriptures, overlay_dir, W, H, fonts, max_words, min_page_seconds, "bottom") if scriptures else []
-    reading_ids = {i for r in board.readings for i in range(r.first, r.last + 1)}
+    shown, _ = plan.vet_key_phrases(board, words, sentences, spans, layers.cards) if layers.callouts else ({}, [])
 
     callouts, cards = [], []
     for shot in shots:
@@ -60,11 +63,10 @@ def build_timeline(board: plan.Storyboard, words: list[plan.Word], sentences: li
                 times.append(min(t, shot.end - 0.5))
                 cursor = (hit + 1) if hit is not None else cursor
             cards.append(render.CardSpec(card=b.card, start=shot.start + 0.3, end=shot.end - 0.05, item_times=times))
-        elif layers.callouts and b.key_phrase.strip() and not (set(range(b.first, b.last + 1)) & reading_ids):
-            timed = plan.phrase_times(b.key_phrase, words, w0, w1)
-            if timed:  # shown only if the words were really spoken in this beat
-                end = min(shot.end - 0.05, max(timed[-1][1] + 2.4, timed[0][1] + 3.0))
-                callouts.append(render.Callout(words=timed, end=end))
+        elif shot.index in shown:  # his own words, really spoken in this beat, outside any scripture reading
+            timed = shown[shot.index]
+            end = min(shot.end - 0.05, max(timed[-1][1] + 2.4, timed[0][1] + 3.0))
+            callouts.append(render.Callout(words=timed, end=end))
     chapters = [render.ChapterMark(number=k + 1, title=c.title, start=starts.get(c.first, 0.0)) for k, c in enumerate(board.chapters)]
     return render.Timeline(
         duration=duration,
@@ -73,6 +75,22 @@ def build_timeline(board: plan.Storyboard, words: list[plan.Word], sentences: li
         caption_words=words if layers.captions else [],
         progress=layers.progress, ink_in=layers.ink_in, camera=layers.camera, show_chapters=layers.chapters,
     )
+
+
+def report_key_phrases(board: plan.Storyboard, words: list[plan.Word], sentences: list[plan.Sentence], layers,
+                       spans: list[attribution.Span] | None) -> None:
+    """Say, in plain words, which key phrases will be shown and why any were dropped."""
+    if not layers.callouts:
+        return
+    if spans is None:
+        print("  Attribution could not be checked: there is no edited transcript for this program, so key phrases "
+              "were checked against the audio only, not for whether they are his own words.")
+    shown, dropped = plan.vet_key_phrases(board, words, sentences, spans, layers.cards)
+    if not shown and not dropped:
+        return
+    print(f"  Key phrases: {len(shown)} will be shown, {len(dropped)} dropped.")
+    for i, phrase, why in dropped:
+        print(f"    Beat {i + 1}, \"{phrase}\": {plan.DROP_REASONS[why]}.")
 
 
 def shots_from(board: plan.Storyboard, sentences: list[plan.Sentence], duration: float) -> list[assets.Shot]:
@@ -179,6 +197,9 @@ def run_studio(
             print(f"  Plan made. Cost: ${actual:.2f}, worked out from the token counts Claude reported.")
     board = plan.repair(board, len(sentences))
     board_path.write_text(board.model_dump_json(indent=2), encoding="utf-8")
+    # Words shown as his must be his: key phrases are checked against his own words in the edited transcript.
+    reference = edited_transcript(cfg, stem)
+    spans = attribution.split_transcript(reference) if reference is not None else None
 
     # 3. shots, animation choice, budget
     shots = shots_from(board, sentences, length)
@@ -200,6 +221,7 @@ def run_studio(
           f"(${st.budget_usd:.0f} per full program, pro-rated).")
     if dropped:
         print(f"  {dropped} planned animation(s) were turned back into stills to stay inside the budget.")
+    report_key_phrases(board, words, sentences, layers, spans)
     summary = {"work": str(work), "shots": len(shots), "animated": n_anim, "estimate": round(est.total, 2), "storyboard": str(board_path)}
     if plan_only:
         print(f"  Plan only. Storyboard: {board_path}")
@@ -221,7 +243,7 @@ def run_studio(
     scale = 0.5 if preview else 1.0
     W, H = int(st.width * scale) // 2 * 2, int(st.height * scale) // 2 * 2
     tl = build_timeline(board, words, sentences, length, shots, layers, work / f"verse_overlays_{W}", W, H,
-                        cfg.verses.max_words, cfg.verses.min_page_seconds)
+                        cfg.verses.max_words, cfg.verses.min_page_seconds, spans=spans)
     name = f"{stem}_L{level}{'_draft' if draft else ''}{'_preview' if preview else ''}"
     out = work / f"{name}.mp4"
     sheet = work / f"{name}_contact_sheet.jpg"

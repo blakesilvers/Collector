@@ -12,6 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from .. import attribution
 from ..config import Config
 from .levels import Layers
 
@@ -156,7 +157,11 @@ they stay recognisable. Never put text, letters or numbers in a picture. Never d
 
 Key phrases. At most one per beat, only when the speaker says something worth seeing in type. It
 must be consecutive words copied exactly from that beat's sentences. Leave it empty during
-scripture readings and on beats that have a card.
+scripture readings and on beats that have a card. A key phrase is shown as the speaker's own words,
+so it must be his own words: never take one from scripture he reads or quotes, from another author
+or publication he reads aloud (in the reference transcript such passages are set apart and often end
+with a short credit line naming the source), or from a [bracketed] note in the transcript. If you
+are unsure whose words they are, leave it empty.
 
 Cards. Use a card when the speaker lists, sequences, dates or defines: a list of reasons, a chain
 of events with months or years, a Greek or Hebrew word and its meaning. Cards are worth more than
@@ -367,6 +372,43 @@ def repair(board: Storyboard, n_sentences: int) -> Storyboard:
         if b.card and not (1 <= len(b.card.items) <= 5):
             fixed[i] = b.model_copy(update={"card": None})
     return Storyboard(title=board.title, chapters=chapters, beats=fixed, readings=readings)
+
+
+NOT_HEARD = "not heard"
+IN_READING = "reading"
+DROP_REASONS = {
+    NOT_HEARD: "not heard in the audio during that picture",
+    IN_READING: "it falls during a scripture reading",
+    **attribution.REASONS,
+}
+
+
+def vet_key_phrases(board: Storyboard, words: list[Word], sentences: list[Sentence],
+                    spans: list[attribution.Span] | None, cards: bool) -> tuple[dict[int, list[tuple[str, float]]], list[tuple[int, str, str | None]]]:
+    """Which key phrases may be shown. A phrase is kept only if it is not during a scripture reading, is found
+    inside one stretch of the speaker's own words in the reference transcript (when there is one: `spans`), and
+    was really spoken during its beat. Returns {beat index: timed words} and [(beat index, phrase, reason)]."""
+    reading_ids = {i for r in board.readings for i in range(r.first, r.last + 1)}
+    timed: dict[int, list[tuple[str, float]]] = {}
+    dropped: list[tuple[int, str, str | None]] = []
+    for i, b in enumerate(board.beats):
+        phrase = b.key_phrase.strip()
+        if not phrase or (cards and b.card):
+            continue  # nothing to show, or the card is shown instead
+        if set(range(b.first, b.last + 1)) & reading_ids:
+            dropped.append((i, phrase, IN_READING))
+            continue
+        if spans is not None:
+            kind = attribution.whose(phrase, spans)
+            if kind != attribution.SPEAKER:
+                dropped.append((i, phrase, kind))
+                continue
+        hit = phrase_times(phrase, words, sentences[b.first].first, sentences[b.last].last)
+        if not hit:
+            dropped.append((i, phrase, NOT_HEARD))
+            continue
+        timed[i] = hit
+    return timed, dropped
 
 
 def phrase_times(phrase: str, words: list[Word], first: int, last: int) -> list[tuple[str, float]]:
