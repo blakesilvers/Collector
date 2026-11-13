@@ -85,6 +85,8 @@ On Windows, if `python` is not found, try `py` in place of `python`. If `pip` is
 Everything is idempotent. A `manifest.json` in each program folder records what is done; re-running
 skips finished stages, and `--force` redoes them.
 
+Taking the project over, or briefing another session? Read `sermon_visuals/docs/HANDOVER.md`.
+
 ## Updating
 
 ```bash
