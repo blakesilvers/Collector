@@ -620,12 +620,22 @@ class Renderer:
         words = callout_words(c)
         probe = ImageDraw.Draw(Image.new("RGBA", (8, 8)))
         size, max_w = round(self.H * 0.074), round(self.W * 0.5)
+        phrase = " ".join(w for w in words if w)
         while True:
             font = self.type.get("hand", size)
-            lines = wrap(probe, " ".join(w for w in words if w), font, max_w)
+            lines = wrap(probe, phrase, font, max_w)
             if len(lines) <= 3 or size <= round(self.H * 0.045):
                 break
             size -= 4
+        # even lines: the narrowest measure that still needs no more lines, so no word is left alone at the end
+        lo, hi = max_w // 3, max_w
+        while hi - lo > 8:
+            mid = (lo + hi) // 2
+            if len(wrap(probe, phrase, font, mid)) <= len(lines):
+                hi = mid
+            else:
+                lo = mid
+        lines = wrap(probe, phrase, font, hi)
         ascent, descent = font.getmetrics()
         line_h = round((ascent + descent) * 1.02)
         space = probe.textlength(" ", font=font)
@@ -646,9 +656,14 @@ class Renderer:
             runs.append((pad, pad + x - space, pad + li * line_h + ascent + round(descent * 0.55)))
         bw = round(max(r[1] for r in runs) + pad)
         bh = round(pad * 2 + len(lines) * line_h)
+        # a soft paper backing under each line only (86% opaque, so the drawing still shows faintly through)
         backing = Image.new("L", (bw, bh), 0)
-        ImageDraw.Draw(backing).rounded_rectangle((pad // 3, pad // 3, bw - pad // 3, bh - pad // 3), radius=pad, fill=230)
-        backing = backing.filter(ImageFilter.GaussianBlur(pad / 3))
+        bd = ImageDraw.Draw(backing)
+        for li, (x0, x1, _) in enumerate(runs):
+            top = pad + li * line_h
+            bd.rounded_rectangle((x0 - pad * 3 // 4, top - pad * 3 // 4, x1 + pad * 3 // 4, top + line_h + pad * 3 // 4),
+                                 radius=pad // 2, fill=219)
+        backing = backing.filter(ImageFilter.GaussianBlur(pad / 6))
         img = Image.new("RGBA", (bw, bh), (*th.paper_rgb, 0))
         img.putalpha(backing)
         d = ImageDraw.Draw(img)

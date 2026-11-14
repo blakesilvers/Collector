@@ -1939,13 +1939,16 @@ def _contrast(with_text, without_text, colour, others=(), tol=40, ring=(3, 7), i
         keep[ys.min() + inset:ys.max() - inset + 1, xs.min() + inset:xs.max() - inset + 1] = True
         changed &= keep
 
-    def near(c):
+    def now(c):
         return np.abs(a - np.array(c)).max(-1) <= tol
 
-    glyph = changed & near(colour)
-    drawn = glyph.copy()
+    # type drawn in this colour: that colour now, and not already that colour beneath (a dark line of the picture
+    # under the soft edge of a backing is not type); anything the layer left in any of its colours is kept out of
+    # the background ring
+    glyph = changed & now(colour) & (np.abs(b - np.array(colour)).max(-1) > tol)
+    drawn = changed & now(colour)
     for c in others:
-        drawn |= changed & near(c)
+        drawn |= changed & now(c)
     bg = _grow(glyph, ring[1]) & ~_grow(drawn, ring[0])
     if glyph.sum() < 20 or bg.sum() < 20:
         return 0.0, 0.0, int(glyph.sum())
@@ -2122,3 +2125,30 @@ def test_theme_follows_the_style(tmp_path: Path):
         with Image.open(tl.verses[0].png) as im:
             px = im.convert("RGBA").getpixel((40, 360 - 20))
         assert (px == (252, 251, 248, 255)) is (theme is INK), style
+
+
+def test_ink_key_phrase_lines_are_balanced_and_the_backing_hugs_them(tmp_path: Path):
+    """A long phrase is set in even lines (no lone last word), and the paper backing behind it covers its lines,
+    not a whole rectangle of the picture."""
+    import numpy as np
+
+    from sermon_visuals.studio import render
+    from sermon_visuals.studio.theme import INK
+    words = "the first Christians knew when Jesus was born.".split()
+    c = render.Callout(words=[(w, 1.0 + 0.3 * i) for i, w in enumerate(words)], end=6.0)
+    tl = _ink_timeline(INK_FIXTURES[0], tmp_path, callouts=[c])
+    r = render.Renderer(tl, 1920, 1080, 24)
+    r.frame(3.0)
+    co = r._callout_layers[0]
+    widths = [x1 - x0 for x0, x1, _ in co["runs"]]
+    assert len(widths) >= 2 and min(widths) >= 0.4 * max(widths), widths
+    shown = [s for s in co["spans"] if s is not None]
+    assert all(sum(1 for s in shown if s[0] == li) >= 2 for li in range(len(widths)))  # no line holds a lone word
+    paper = (np.abs(co["layer"][..., :3].astype(int) - np.array(INK.paper_rgb)).max(-1) <= 2)
+    alpha = np.where(paper, co["layer"][..., 3].astype(np.float32) / 255.0, 0.0)  # the backing, not the type
+    assert 0.8 <= alpha.max() <= 0.86 + 1e-6  # the picture still shows faintly through the backing
+    if len(widths) >= 2 and widths[-1] < 0.8 * max(widths):
+        x0, x1, yu = co["runs"][-1]
+        beyond = alpha[int(yu) - 10:int(yu), int(x1 + co["sw"] * 6):]
+        assert beyond.size and beyond.mean() < 0.2  # nothing behind the empty end of a short last line
+    r.close()
