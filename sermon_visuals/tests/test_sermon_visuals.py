@@ -1488,3 +1488,74 @@ def test_picture_progress_counts_against_the_real_total(workspace: Path, caplog)
         assets.generate_assets(cfg, shots, "style", assets.DraftArt(), None, assets.Ledger(workspace / "spend.json"), 0.1, 0.07, workers=1)
     done = [m for m in caplog.messages if m.startswith("Picture ")]
     assert done == [f"Picture {k}/5 done" for k in range(1, 6)]
+
+
+# ---------- the look of the dark styles is pinned ----------
+
+GOLDEN = HERE / "fixtures" / "dark_theme_frames.json"
+GOLDEN_TIMES = [0.5, 3.35, 4.5, 5.3, 6.0, 8.0, 10.5, 13.5, 15.8]
+
+
+def _golden_picture(path: Path, seed: int) -> Path:
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:432, 0:768].astype(np.float32)
+    base = np.stack([60 + 120 * xx / 768, 80 + 90 * yy / 432, 140 - 60 * xx / 768], -1)
+    for _ in range(6):
+        cx, cy, r = rng.integers(0, 768), rng.integers(0, 432), rng.integers(30, 120)
+        base[(xx - cx) ** 2 + (yy - cy) ** 2 < r * r] = rng.integers(0, 255, 3)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(base.clip(0, 255).astype(np.uint8)).save(path)
+    return path
+
+
+def _golden_timeline(tmp: Path, **extra):
+    from sermon_visuals.studio import plan, render
+    from sermon_visuals.verses import Scripture, build_overlays
+    a, b = _golden_picture(tmp / "a.png", 1), _golden_picture(tmp / "b.png", 2)
+    card = plan.Card(type="list", title="Three reasons", items=[
+        plan.CardItem(label="No date given", detail="Scripture is silent"), plan.CardItem(label="No feast kept", detail=""),
+        plan.CardItem(label="Shepherds outdoors", detail="Not in December")])
+    verses = build_overlays([Scripture(start=13.0, end=15.5, reference="Luke 2:8", version="KJV",
+                                       text="And there were in the same country shepherds abiding in the field.")],
+                            tmp / "verses", 640, 360, compose.Fonts.resolve())
+    return render.Timeline(
+        duration=16.0,
+        shots=[render.ShotSpec(0.0, 5.0, a), render.ShotSpec(5.0, 10.0, b), render.ShotSpec(10.0, 16.0, a)],
+        callouts=[render.Callout(words=[("the", 3.0), ("first", 3.3), ("Christians", 3.6)], end=4.9)],
+        cards=[render.CardSpec(card=card, start=5.5, end=9.5, item_times=[5.8, 6.6, 7.4])],
+        chapters=[render.ChapterMark(1, "A loaded question", 0.0), render.ChapterMark(2, "Counting the months", 10.0)],
+        verses=verses, caption_words=[plan.Word(w=w, s=s, e=s + 0.25) for w, s in
+                                      [("What", 3.0), ("did", 3.3), ("they", 3.6), ("believe?", 3.9), ("Nobody", 15.4), ("knows.", 15.7)]],
+        **extra)
+
+
+def _golden_hashes(tmp: Path, **extra) -> dict:
+    import hashlib
+
+    from sermon_visuals.studio import render
+    r = render.Renderer(_golden_timeline(tmp, **extra), 640, 360, 24)
+    out = {f"{t:.2f}": hashlib.sha256(r.frame(t).tobytes()).hexdigest() for t in GOLDEN_TIMES}
+    r.close()
+    return out
+
+
+def _golden_env() -> dict:
+    import PIL
+
+    from sermon_visuals.studio import render
+    t = render.Type()
+    return {"fonts": [t.display, t.bold, t.sans, t.serif, compose.Fonts.resolve().serif], "pillow": PIL.__version__}
+
+
+def test_dark_styles_look_exactly_as_before(tmp_path: Path):
+    """Frames of a fixed timeline (callout, card, both chapter treatments, scripture band, progress bar, ink-in)
+    must match, pixel for pixel, what the renderer drew before the ink theme existed."""
+    import os
+    if os.environ.get("SV_WRITE_GOLDEN"):
+        GOLDEN.parent.mkdir(parents=True, exist_ok=True)
+        GOLDEN.write_text(json.dumps({"env": _golden_env(), "frames": _golden_hashes(tmp_path)}, indent=1), encoding="utf-8")
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    if golden["env"] != _golden_env():
+        pytest.skip("different fonts or Pillow version from the machine that pinned the frames")
+    assert _golden_hashes(tmp_path) == golden["frames"]
