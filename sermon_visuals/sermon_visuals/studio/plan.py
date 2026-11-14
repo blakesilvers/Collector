@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from .. import attribution
 from ..config import Config
-from .levels import STYLES, Layers
+from .levels import STYLES, Layers, is_whiteboard
 
 log = logging.getLogger(__name__)
 
@@ -139,6 +139,25 @@ class Storyboard(BaseModel):
     readings: list[Reading]
 
 
+WHITEBOARD_SCENE = ("What to draw: one idea, as two or three clearly separated subjects and what they are doing, on plain "
+                    "white with wide empty margins. No lighting, time of day, camera or colour words. No text or lettering "
+                    "in the picture.")
+
+
+class WhiteboardBeat(Beat):
+    scene: str = Field(description=WHITEBOARD_SCENE)
+
+
+class WhiteboardStoryboard(Storyboard):
+    """The same storyboard, asked for with the whiteboard description of a scene. Saved as a plain Storyboard."""
+    beats: list[WhiteboardBeat]
+
+
+def storyboard_model(style: str) -> type[Storyboard]:
+    """The reply shape Claude is asked for: the scene's description follows the [studio] style name."""
+    return WhiteboardStoryboard if is_whiteboard(style) else Storyboard
+
+
 SYSTEM = """You are the director of an illustrated teaching video. The audio is a Bible teacher's
 radio program; nothing in the audio may be changed. Your job is to plan what the viewer sees so
 that the pictures carry the argument: every picture must show the idea being spoken at that moment.
@@ -184,6 +203,36 @@ Do not list passages he only mentions.
 
 Hero beats. Mark the beats that most deserve animation; write every beat's motion line regardless."""
 
+_CINEMATIC_SCENES = """For each beat write a scene an illustrator can draw at once:
+concrete subject, action, setting, light and framing. Prefer people doing things, objects, places,
+maps without labels, hands, rolled scrolls, journeys, contrasts shown side by side. Vary the framing
+from beat to beat (wide, medium, close, overhead) so consecutive pictures feel like cuts in a film.
+Each picture is drawn on its own, without sight of the others, so describe every recurring person
+in full every time they appear (age, build, hair, clothing and its colours); never write "the same
+man" or point back to an earlier beat."""
+
+_WHITEBOARD_SCENES = """The pictures are drawn by a whiteboard illustrator in black
+ink with one orange accent on plain white paper. For each beat write a scene that shows one idea per
+picture: two or three clearly separated subjects on plain white with wide empty margins, and nothing
+filling the background. Say what each subject is, what it is doing and where it sits in the picture
+(left, right, middle); never mention lighting, time of day, camera shots or framing, or colours.
+Prefer objects, hands, simple figures doing things, maps without labels, rolled scrolls, journeys,
+contrasts shown side by side. People are simple generic figures: dot eyes, short strokes for brow
+and mouth, plain clothing; never portraits, never detailed faces. Never draw a single central robed
+figure addressing a seated group, never a shared-meal table of about a dozen people, and never glow,
+rays or light around or near anyone's head. Mention a lamp only when the scene truly needs one, and
+then call it a "clay oil lamp". Each picture is drawn on its own, without sight of the others: never
+point back to an earlier beat."""
+
+assert _CINEMATIC_SCENES in SYSTEM
+SYSTEM_WHITEBOARD = SYSTEM.replace(_CINEMATIC_SCENES, _WHITEBOARD_SCENES)
+
+
+def system_for(style: str) -> str:
+    """The planner's standing instructions for a [studio] style name: whiteboard rules for ink, the cinematic
+    rules (unchanged) for every other style."""
+    return SYSTEM_WHITEBOARD if is_whiteboard(style) else SYSTEM
+
 
 def forbids_close_faces(style: str) -> bool:
     """True if a house-style text rules out faces in close-up ("No people's faces in close-up.")."""
@@ -220,12 +269,40 @@ def lint_scene(scene: str) -> list[str]:
     return found
 
 
+# Words a whiteboard (ink) scene should not have: camera shots, time of day, lighting, colours, and anything that
+# can read as a halo. Warned about, never blocked. Longer alternatives come first so "golden hour" beats "golden".
+_STYLE_WORDS = (
+    r"close[- ]ups?|close shot|wide shot|medium shot|long shot|establishing shot|overhead|aerial|bird's[- ]eye|"
+    r"low[- ]angle|high[- ]angle|panoramic|panorama|cinematic|framing|camera|"
+    r"golden hour|dawn|dusk|sunrise|sunset|twilight|morning|noon|midday|afternoon|evening|night|nighttime|midnight|"
+    r"lamplight|lamplit|sunlight|sunlit|moonlight|moonlit|candlelight|candlelit|firelight|torchlight|starlight|"
+    r"lighting|lights?|lit|shadows?|silhouetted|silhouettes?|backlit|glows?|glowing|halos?|haloes|rays|beams?|"
+    r"sunbeams?|radiant|radiance|shining|aura|"
+    r"red|orange|yellow|green|blue|purple|violet|pink|crimson|scarlet|golden|gold|amber|teal|turquoise|brown|grey|gray|"
+    r"cream|ochre|umber|navy|indigo|colou?rs?|colou?red|colou?rful"
+)
+STYLE_PRONE = re.compile(rf"\b(?:{_STYLE_WORDS})\b", re.I)
+
+
+def lint_style(scene: str, style: str) -> list[str]:
+    """For a whiteboard style: camera, time-of-day, lighting, colour and halo-like words in a scene, in order of first
+    appearance. Empty for every other style, which is meant to have them."""
+    if not is_whiteboard(style):
+        return []
+    found: list[str] = []
+    for m in STYLE_PRONE.finditer(scene):
+        word = m.group(0).lower()
+        if word not in found:
+            found.append(word)
+    return found
+
+
 def _request(cfg: Config, sentences: list[Sentence], reference: str, layers: Layers, direction: str) -> str:
     rules = [
         f"Program: {cfg.ministry.program_name}. Speaker: {cfg.ministry.speaker or 'unknown'}.",
         f"Target beat length: about {layers.beat_seconds:.0f} seconds (so roughly {max(1, round((sentences[-1].e - sentences[0].s) / layers.beat_seconds))} beats).",
         f"Key phrases: {'yes' if layers.callouts else 'leave every key_phrase empty'}. Cards: {'yes' if layers.cards else 'set every card to null'}.",
-        f"depict_christ: {'true' if cfg.style.depict_christ else 'false. Never depict Jesus or God in any form, including as an infant; show the setting, the witnesses, hands, light, the manger, instead'}.",
+        f"depict_christ: {'true' if cfg.style.depict_christ else 'false. Never depict Jesus or God in any form, including as an infant; show the setting, the witnesses, hands, the manger, instead; never use light, glow or rays as a stand-in for Him'}.",
     ]
     if cfg.style.avoid:
         rules.append("Avoid in pictures: " + "; ".join(cfg.style.avoid) + ".")
@@ -312,7 +389,7 @@ def storyboard_ceiling(cfg: Config, sentences: list[Sentence], layers: Layers, d
     REFERENCE_ALLOWANCE standing in for a transcript not yet read, plus a fixed overhead, all at the dearest input
     rate; output as a reply that runs all the way to MAX_TOKENS."""
     st = cfg.studio
-    tokens = len((SYSTEM + _request(cfg, sentences, reference or "", layers, direction)).encode("utf-8"))
+    tokens = len((system_for(st.style) + _request(cfg, sentences, reference or "", layers, direction)).encode("utf-8"))
     tokens += REQUEST_OVERHEAD_TOKENS + (REFERENCE_ALLOWANCE if reference is None else 0)
     input_rate = max(st.claude_input_usd_per_mtok, st.claude_cache_write_usd_per_mtok)
     return (tokens * input_rate + MAX_TOKENS * st.claude_output_usd_per_mtok) / 1e6
@@ -343,16 +420,17 @@ def make_storyboard(cfg: Config, sentences: list[Sentence], reference: str, laye
     unreadable = StoryboardFailed("Claude's storyboard reply came back cut off or incomplete, so it could not be used. "
                                   "You were probably charged for it. " + SHORTER, True)
     started = False
+    shape = storyboard_model(cfg.studio.style)
     try:
         client = client or anthropic.Anthropic()
         log.info("Storyboarding %d sentences with %s", len(sentences), cfg.extract.model)
         with client.messages.stream(
             model=cfg.extract.model,
             max_tokens=MAX_TOKENS,
-            system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
+            system=[{"type": "text", "text": system_for(cfg.studio.style), "cache_control": {"type": "ephemeral"}}],
             output_config={"effort": "high"},
             messages=[{"role": "user", "content": _request(cfg, sentences, reference, layers, direction)}],
-            output_format=Storyboard,
+            output_format=shape,
         ) as stream:
             started = True  # the request was accepted; tokens are being generated and billed from here on
             message = stream.get_final_message()
@@ -372,10 +450,12 @@ def make_storyboard(cfg: Config, sentences: list[Sentence], reference: str, laye
     if board is None:
         text = "".join(b.text for b in message.content if b.type == "text")
         try:
-            board = Storyboard.model_validate_json(text)
+            board = shape.model_validate_json(text)
         except ValidationError:
             unreadable.usd = usd
             raise unreadable from None
+    if type(board) is not Storyboard:  # the whiteboard shape differs only in a field description
+        board = Storyboard.model_validate(board.model_dump())
     return board, usd
 
 

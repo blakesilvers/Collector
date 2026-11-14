@@ -112,6 +112,20 @@ def report_writing_risk(shots: list[assets.Shot]) -> None:
         print(f"    Beat {beat}: {', '.join(words)}")
 
 
+def report_style_risk(shots: list[assets.Shot], style: str) -> None:
+    """For the whiteboard (ink) style: warn (never block) about scenes still to be drawn that use camera, time-of-day,
+    lighting or colour words, or anything that can read as a halo."""
+    risky = [(s.index + 1, words) for s in shots if s.image and not s.image.exists()
+             for words in [plan.lint_style(s.beat.scene, style)] if words]
+    if not risky:
+        return
+    print("  Warning: these scenes use camera, time-of-day, lighting or colour words, which the ink style leaves out "
+          "(glow, rays or a halo near a person can look like a halo). To change one, edit its scene in the storyboard "
+          "file and run again (only that picture is redrawn):")
+    for beat, words in risky:
+        print(f"    Beat {beat}: {', '.join(words)}")
+
+
 def shots_from(board: plan.Storyboard, sentences: list[plan.Sentence], duration: float) -> list[assets.Shot]:
     cuts = [0.0] + [max(0.0, sentences[b.first].s - 0.15) for b in board.beats[1:]] + [duration]
     return [assets.Shot(index=i, start=cuts[i], end=cuts[i + 1], beat=b) for i, b in enumerate(board.beats) if cuts[i + 1] > cuts[i]]
@@ -252,6 +266,7 @@ def run_studio(
         print(f"  {dropped} planned animation(s) were turned back into stills to stay inside the budget.")
     report_key_phrases(board, words, sentences, layers, spans)
     report_writing_risk(shots)
+    report_style_risk(shots, st.style)
     summary = {"work": str(work), "shots": len(shots), "animated": n_anim, "estimate": round(est.total, 2), "storyboard": str(board_path)}
     if plan_only:
         print(f"  Plan only. Storyboard: {board_path}")

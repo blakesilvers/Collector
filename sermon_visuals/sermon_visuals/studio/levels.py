@@ -47,6 +47,15 @@ def layers_for(level: int, overrides: dict | None = None) -> Layers:
     return replace(base, **clean)
 
 
+# Styles drawn like a whiteboard explainer: black line on plain white paper with one accent. The planner, the text
+# layers and the picture clean-up all switch on this (keyed by the [studio] style name in config.toml).
+WHITEBOARD_STYLES = frozenset({"ink"})
+
+
+def is_whiteboard(style: str) -> bool:
+    return (style or "").strip().lower() in WHITEBOARD_STYLES
+
+
 STYLES = {
     "graphic": (
         "Bold graphic editorial illustration. Thick confident black ink outlines, flat saturated colour fields in a limited "

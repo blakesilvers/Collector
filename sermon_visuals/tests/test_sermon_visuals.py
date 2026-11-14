@@ -1559,3 +1559,103 @@ def test_dark_styles_look_exactly_as_before(tmp_path: Path):
     if golden["env"] != _golden_env():
         pytest.skip("different fonts or Pillow version from the machine that pinned the frames")
     assert _golden_hashes(tmp_path) == golden["frames"]
+
+
+# ---------- planner rules for the whiteboard (ink) style ----------
+
+WHITEBOARD_NEEDLES = ("one idea per picture", "two or three clearly separated subjects", "plain white",
+                      "wide empty margins", "never mention lighting, time of day, camera shots or framing, or colours",
+                      "dot eyes", "never portraits", "single central robed figure", "shared-meal table",
+                      "never glow, rays or light", "clay oil lamp")
+CINEMATIC_NEEDLES = ("light and framing", "Vary the framing", "in full every time", "\"the same man\"")
+
+
+def test_planner_rules_follow_the_style():
+    from sermon_visuals.studio import plan
+    ink = " ".join(plan.system_for("ink").split())
+    for needle in WHITEBOARD_NEEDLES:
+        assert needle in ink, needle
+    for needle in ("light and framing", "Vary the framing", "in full every time"):
+        assert needle not in ink, needle
+    # the rules every style shares are still there
+    for needle in ("closed, rolled, blank or turned away", "somewhere the speaker says they were not", "Never draw the speaker",
+                   "point back to an earlier beat"):
+        assert needle in ink, needle
+    for style in ("graphic", "painterly", "woodcut", "A custom watercolour style.", ""):
+        assert plan.system_for(style) == plan.SYSTEM, style
+    text = " ".join(plan.SYSTEM.split())
+    for needle in CINEMATIC_NEEDLES:
+        assert needle in text, needle
+    for needle in WHITEBOARD_NEEDLES[2:]:
+        assert needle not in text, needle
+
+
+def test_scene_field_description_follows_the_style():
+    from sermon_visuals.studio import plan
+    scene = lambda model: model.model_json_schema()["$defs"][  # noqa: E731
+        next(k for k in model.model_json_schema()["$defs"] if "Beat" in k)]["properties"]["scene"]["description"]
+    assert plan.storyboard_model("graphic") is plan.Storyboard
+    assert "light, framing" in scene(plan.Storyboard)
+    ink = scene(plan.storyboard_model("ink"))
+    assert "plain white" in ink and "No lighting, time of day, camera or colour words" in ink and "light, framing" not in ink
+
+
+def test_whiteboard_storyboard_call_uses_the_whiteboard_rules(workspace: Path):
+    from types import SimpleNamespace
+
+    from sermon_visuals.studio import plan
+    cfg, sentences, layers = _plan_inputs(workspace)
+    reply = _studio_board().model_dump_json()
+    for style, model in (("ink", plan.storyboard_model("ink")), ("graphic", plan.Storyboard)):
+        cfg.studio.style = style
+        msg = SimpleNamespace(stop_reason="end_turn", parsed_output=None, usage=None,
+                              content=[SimpleNamespace(type="text", text=reply)])
+        client = _FakeClaude(_FakeStream(message=msg))
+        board, _ = plan.make_storyboard(cfg, sentences, "", layers, client=client)
+        assert client.kwargs["system"][0]["text"] == plan.system_for(style)
+        assert client.kwargs["output_format"] is model
+        assert type(board) is plan.Storyboard and board == _studio_board()  # saved in the one shape, whatever the style
+        # the spending ceiling is worked out from the text that is really sent
+        worst = (len((plan.system_for(style) + plan._request(cfg, sentences, "", layers, "")).encode("utf-8"))
+                 * max(cfg.studio.claude_input_usd_per_mtok, cfg.studio.claude_cache_write_usd_per_mtok)
+                 + plan.MAX_TOKENS * cfg.studio.claude_output_usd_per_mtok) / 1e6
+        assert plan.storyboard_ceiling(cfg, sentences, layers, "", "") >= worst
+
+
+def test_no_light_as_a_stand_in_for_god(workspace: Path):
+    from sermon_visuals.studio import plan
+    cfg, sentences, layers = _plan_inputs(workspace)
+    for style in ("graphic", "ink"):
+        cfg.studio.style = style
+        req = plan._request(cfg, sentences, "", layers, "")
+        line = next(x for x in req.splitlines() if x.startswith("depict_christ"))
+        assert "the manger" in line and "never use light, glow or rays as a stand-in" in line
+        assert "hands, light" not in line and "light, the manger" not in line
+
+
+def test_whiteboard_scene_lint():
+    from sermon_visuals.studio import plan
+    scene = ("Wide shot of a village at dusk, warm golden light on a man in a blue tunic; "
+             "a halo of rays glows behind him, close-up of his hands.")
+    assert plan.lint_style(scene, "ink") == ["wide shot", "dusk", "golden", "light", "blue", "halo", "rays", "glows", "close-up"]
+    for style in ("graphic", "painterly", "woodcut"):
+        assert plan.lint_style(scene, style) == []
+    assert plan.lint_style("Two hands pass a rolled scroll across a plain table; a clay oil lamp beside it.", "ink") == []
+    assert plan.lint_style("A shepherd with a lamp, overhead view, at night under moonlight.", "ink") == [
+        "overhead", "night", "moonlight"]
+    assert plan.lint_scene(scene) == []  # the writing lint is unchanged
+
+
+def test_whiteboard_lint_warns_before_the_picture_question(workspace: Path, monkeypatch, capsys):
+    from sermon_visuals.studio import plan as P
+    cfg, run, calls, work = _gated_studio(workspace, monkeypatch)
+    cfg.studio.image_usd = 0.10
+    board = P.Storyboard(title="T", chapters=[], readings=[], beats=[
+        P.Beat(first=0, last=1, scene="Two hands and a rolled scroll on plain white.", motion="", hero=False, key_phrase=""),
+        P.Beat(first=2, last=99, scene="Wide shot of a robed man at dusk with a halo.", motion="", hero=False, key_phrase="")])
+    for style, expect in (("ink", True), ("graphic", False)):
+        cfg.studio.style = style
+        seen: list[str] = []
+        run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), board=board, provider=FakeProvider(),
+                       confirm=lambda q: seen.append(capsys.readouterr().out) or "n")
+        assert ("Beat 2: wide shot, dusk, halo" in seen[0]) is expect and "Beat 1:" not in seen[0], style
