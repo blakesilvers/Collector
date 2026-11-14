@@ -162,10 +162,13 @@ def report_picture_check(shots: list[assets.Shot], image_usd: float) -> None:
         if not s.image or not s.image.exists():
             continue
         if s.image not in reasons:
-            with Image.open(s.image) as im:
-                small = im.convert("RGB")
-            small.thumbnail((1376, 1376))
-            reasons[s.image] = ink.qc(ink.normalize(small)).reasons()
+            try:
+                with Image.open(s.image) as im:
+                    small = im.convert("RGB")
+                small.thumbnail((1376, 1376))
+                reasons[s.image] = ink.qc(ink.normalize(small)).reasons()
+            except Exception as exc:  # a warning only: never let the check stop the run
+                reasons[s.image] = [f"could not be checked ({type(exc).__name__})"]
         if reasons[s.image]:
             flagged.append((s.index + 1, reasons[s.image]))
     if not flagged:

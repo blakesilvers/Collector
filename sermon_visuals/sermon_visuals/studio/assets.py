@@ -45,6 +45,11 @@ class Shot:
         return bool(self.image) and (self.redraw or not self.image.exists())
 
     @property
+    def to_animate(self) -> bool:
+        """A clip still to be made: none yet, or its picture is being redrawn (a clip is made from its picture)."""
+        return bool(self.animate and self.clip) and (self.redraw or not self.clip.exists())
+
+    @property
     def duration(self) -> float:
         return self.end - self.start
 
@@ -184,8 +189,8 @@ def estimate(shots: list[Shot], image_usd: float, video_usd_per_second: float, s
     new = {s.image for s in shots if s.to_draw}
     new_images = len(new)
     cached_images = len({s.image for s in shots if s.image and s.image.exists()} - new)
-    new_secs = sum(s.clip_seconds for s in shots if s.animate and s.clip and not s.clip.exists())
-    cached_clips = sum(1 for s in shots if s.animate and s.clip and s.clip.exists())
+    new_secs = sum(s.clip_seconds for s in shots if s.to_animate)
+    cached_clips = sum(1 for s in shots if s.animate and s.clip and s.clip.exists() and not s.to_animate)
     return Estimate(new_images, cached_images, new_secs, cached_clips, new_images * image_usd, new_secs * video_usd_per_second, storyboard_usd)
 
 
@@ -207,7 +212,7 @@ def fit_to_budget(shots: list[Shot], budget: float, image_usd: float, video_usd_
     Returns how many were dropped. Raises OverBudget if it still does not fit once every animation is gone, so
     nothing is generated whatever the caller was told to assume."""
     dropped = 0
-    animated = sorted((s for s in shots if s.animate and s.clip and not s.clip.exists()), key=lambda s: (s.beat.hero, -s.clip_seconds))
+    animated = sorted((s for s in shots if s.to_animate), key=lambda s: (s.beat.hero, -s.clip_seconds))
     # Written as "not fits" so a nonsense figure (NaN from a damaged spend.json) refuses instead of slipping through.
     while animated and not estimate(shots, image_usd, video_usd_per_second, storyboard_usd).total <= budget + PENNY_FRACTION:
         s = animated.pop(0)
@@ -246,6 +251,20 @@ def keep_aside(path: Path) -> Path:
         aside = path.with_name(f"{path.stem}.before-redraw-{n}{path.suffix}")
     path.replace(aside)
     return aside
+
+
+def install(path: Path, data: bytes) -> None:
+    """Replace a cached file with new bytes, keeping the old one beside it. If anything fails part-way, the old
+    file is put back where it was, so a failed redraw never loses the current picture."""
+    fresh = path.with_name(path.stem + ".new" + path.suffix)
+    fresh.write_bytes(data)
+    aside = keep_aside(path)
+    try:
+        fresh.replace(path)
+    except Exception:
+        aside.replace(path)
+        fresh.unlink(missing_ok=True)
+        raise
 
 
 def _retry(fn, attempts: int = 3, wait: float = 4.0, give_up=lambda exc: False):
@@ -341,10 +360,7 @@ def generate_assets(
             data = _retry(lambda: paid(image_usd, lambda: provider.generate(prompt, "16:9", refs[-3:])), give_up=over_allowance)
             s.image.parent.mkdir(parents=True, exist_ok=True)
             if s.image.exists():  # a redraw: keep the old picture beside the new one, never lose it
-                fresh = s.image.with_name(s.image.stem + ".new" + s.image.suffix)
-                fresh.write_bytes(data)
-                keep_aside(s.image)
-                fresh.replace(s.image)
+                install(s.image, data)
             else:
                 s.image.write_bytes(data)
             ledger.add(image_usd, images=1)
@@ -371,6 +387,12 @@ def generate_assets(
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             list(pool.map(lambda s: draw(s, base_refs + anchors), pending))
 
+    # A picture that could not be redrawn keeps its old clip too: animating the old picture again would be wasted.
+    failed = set(report.image_failures)
+    for s in shots:
+        if s.redraw and s.index in failed:
+            s.redraw = False
+
     # Shots whose picture failed borrow their neighbour's, so the render always completes.
     for i, s in enumerate(shots):
         if s.image and not s.image.exists():
@@ -380,7 +402,7 @@ def generate_assets(
                 raise RuntimeError("no pictures could be generated; check the image API key and model name")
             s.image, s.animate, s.clip = donor, False, None
 
-    clips = [s for s in shots if s.animate and s.clip and not s.clip.exists()]
+    clips = [s for s in shots if s.to_animate]
     if clips and motion is None:
         raise RuntimeError("animated shots were planned but no motion provider is configured")
 
@@ -394,7 +416,10 @@ def generate_assets(
             data = _retry(lambda: paid(s.clip_seconds * video_usd_per_second,
                                        lambda: motion.animate(s.image, motion_prompt(s.beat, guard), s.clip_seconds)),
                           attempts=2, wait=8.0, give_up=lambda e: model_missing(e) or over_allowance(e))
-            s.clip.write_bytes(data)
+            if s.clip.exists():  # made again from a redrawn picture: keep the old clip beside it
+                install(s.clip, data)
+            else:
+                s.clip.write_bytes(data)
             ledger.add(s.clip_seconds * video_usd_per_second, clip_seconds=s.clip_seconds)
             with lock:
                 report.clips_made += 1

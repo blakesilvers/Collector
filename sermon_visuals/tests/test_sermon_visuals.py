@@ -1897,8 +1897,13 @@ def test_ink_picture_check_is_printed_after_generation(workspace: Path, monkeypa
 
     for style, expect in (("ink", True), ("graphic", False)):
         cfg.studio.style = style
-        run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), board=_two_beat_board(), provider=Pictures(),
+        made = Pictures()
+        made.calls = 0
+        original = made.generate
+        made.generate = lambda *a, **k: (setattr(made, "calls", made.calls + 1), original(*a, **k))[1]
+        run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), board=_two_beat_board(), provider=made,
                        confirm=lambda q: "y")
+        assert made.calls == 2, style  # pictures were really made in both styles (the style is part of their name)
         out = capsys.readouterr().out
         assert ("Picture check" in out) is expect, style
         if expect:
@@ -2030,14 +2035,22 @@ def test_ink_text_layers_meet_contrast_over_real_ink_pictures(tmp_path: Path):
 
 def test_ink_key_phrase_is_whole_and_its_underline_draws_on(tmp_path: Path):
     from sermon_visuals.studio.theme import INK
+    import numpy as np
     pic = INK_FIXTURES[1]
-    times = [1.05, 1.5, 2.6]
+    times = [1.05, 1.16, 1.5, 2.6]  # the phrase is due at 0.95 and fully faded in by 1.15
     shown = _frames(_ink_timeline(pic, tmp_path, callouts=[_phrase()]), times)
     bare = _frames(_ink_timeline(pic, tmp_path), times)
-    ink_px = [_contrast(a, b, INK.ink, others=[INK.accent])[2] for a, b in zip(shown, bare)]
+
+    def type_mask(a, b):  # pixels of charcoal type, away from the underline
+        m = (np.abs(a.astype(int) - b.astype(int)).sum(-1) > 24) & (np.abs(a.astype(int) - np.array(INK.ink)).max(-1) <= 40)
+        return m & ~_grow((np.abs(a.astype(int) - np.array(INK.accent)).max(-1) <= 60), 4)
+
+    first, last = type_mask(shown[1], bare[1]), type_mask(shown[3], bare[3])
+    overlap = (first & last).sum() / max(1, (first | last).sum())
+    # every word is up, in place, from the start (one added word would cost about a quarter; the camera drift a little)
+    assert last.sum() > 500 and overlap > 0.9
     accent_px = [_contrast(a, b, INK.accent, others=[INK.ink])[2] for a, b in zip(shown, bare)]
-    assert ink_px[1] > 500 and abs(ink_px[1] - ink_px[2]) <= 0.02 * ink_px[2]  # every word is up from the start
-    assert accent_px[0] < accent_px[1] < accent_px[2]                          # the underline follows the words
+    assert accent_px[1] < accent_px[2] < accent_px[3]  # the underline follows the words
 
 
 def test_ink_key_phrase_shows_the_vetted_words():
@@ -2152,3 +2165,100 @@ def test_ink_key_phrase_lines_are_balanced_and_the_backing_hugs_them(tmp_path: P
         beyond = alpha[int(yu) - 10:int(yu), int(x1 + co["sw"] * 6):]
         assert beyond.size and beyond.mean() < 0.2  # nothing behind the empty end of a short last line
     r.close()
+
+
+def test_ink_key_phrase_draws_exactly_the_vetted_words(tmp_path: Path, monkeypatch):
+    """What the renderer sets in type is the timed words, in order, nothing added, nothing dropped."""
+    from PIL import ImageDraw
+
+    from sermon_visuals.studio import render
+    drawn: list[str] = []
+    real = ImageDraw.ImageDraw.text
+
+    def spy(self, xy, text, *a, **k):
+        drawn.append(text)
+        return real(self, xy, text, *a, **k)
+
+    words = [("\u201cThe", 1.0), ("first", 1.2), ("Christians", 1.4), ("knew", 1.6), ("when", 1.8), ("Jesus", 2.0),
+             ("was", 2.2), ("born.", 2.4)]
+    c = render.Callout(words=words, end=6.0)
+    tl = _ink_timeline(INK_FIXTURES[0], tmp_path, callouts=[c])
+    r = render.Renderer(tl, 960, 540, 24)
+    r.frame(0.5)
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", spy)
+    r.frame(3.0)
+    r.close()
+    assert " ".join(drawn).split() == ["The", "first", "Christians", "knew", "when", "Jesus", "was", "born"]
+
+
+def test_ink_text_waits_even_when_the_first_word_is_on_the_cut(tmp_path: Path):
+    from sermon_visuals.studio import render
+    a = _golden_picture(tmp_path / "a.png", 1)
+    b = _golden_picture(tmp_path / "b.png", 2)
+    shots = [render.ShotSpec(0.0, 5.0, a), render.ShotSpec(5.0, 10.0, b)]
+    times = [4.9, 5.3, 5.9]
+    shown = _frames(_ink_timeline(None, tmp_path, shots=shots, callouts=[_phrase(5.0)]), times)
+    bare = _frames(_ink_timeline(None, tmp_path, shots=shots), times)
+    assert (shown[1] == bare[1]).all() and not (shown[2] == bare[2]).all()
+
+
+def test_redraw_of_an_animated_beat_redraws_its_clip(workspace: Path):
+    from sermon_visuals import imagegen
+    from sermon_visuals.studio import assets, plan
+    cfg = load_config(workspace / "config.toml")
+    beats = [plan.Beat(first=i, last=i, scene=f"scene {i}", motion="m", hero=True, key_phrase="") for i in range(2)]
+    shots = [assets.Shot(index=i, start=i * 5.0, end=(i + 1) * 5.0, beat=b, animate=True, clip_seconds=5) for i, b in enumerate(beats)]
+    assets.assign_paths(shots, workspace / "a", "style", imagegen.content_guard(cfg), "m")
+    calls: list[str] = []
+
+    class Motion:
+        model = "m"
+
+        def animate(self, image, prompt, seconds):
+            calls.append(image.read_bytes()[:64].hex())
+            return b"clip-" + str(len(calls)).encode()
+
+    ledger = assets.Ledger(workspace / "spend.json")
+    assets.generate_assets(cfg, shots, "style", _ColourProvider(), Motion(), ledger, 0.1, 0.07, workers=1)
+    old_clip = shots[1].clip.read_bytes()
+    shots[1].redraw = True
+    est = assets.estimate(shots, 0.1, 0.07, 0.0)
+    assert est.new_images == 1 and est.new_clip_seconds == 5  # the clip is priced again with the picture
+    assets.generate_assets(cfg, shots, "style", _ColourProvider(), Motion(), ledger, 0.1, 0.07, workers=1)
+    assert len(calls) == 3 and shots[1].clip.read_bytes() != old_clip  # animated again, from the new picture
+    assert list((workspace / "a").glob("clip_*.before-redraw*.mp4"))  # the old clip is kept too
+
+
+def test_failed_redraw_keeps_the_current_picture(workspace: Path, monkeypatch):
+    from sermon_visuals import imagegen
+    from sermon_visuals.studio import assets, plan
+    cfg = load_config(workspace / "config.toml")
+    shot = assets.Shot(index=0, start=0.0, end=5.0, beat=plan.Beat(first=0, last=0, scene="s", motion="", hero=False, key_phrase=""))
+    assets.assign_paths([shot], workspace / "a", "style", imagegen.content_guard(cfg), "m")
+    assets.generate_assets(cfg, [shot], "style", _ColourProvider(), None, assets.Ledger(workspace / "spend.json"), 0.1, 0.07, workers=1)
+    before = shot.image.read_bytes()
+    real = Path.replace
+
+    def flaky(self, target):
+        if self.name.endswith(".new.png"):
+            raise OSError("disk full")
+        return real(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky)
+    shot.redraw = True
+    report = assets.generate_assets(cfg, [shot], "style", _ColourProvider(), None, assets.Ledger(workspace / "spend.json"), 0.1, 0.07,
+                                    workers=1)
+    assert report.image_failures == [0] and shot.image.read_bytes() == before
+
+
+def test_picture_check_never_stops_the_run(workspace: Path, capsys):
+    from sermon_visuals.studio import assets, plan, run
+    good = workspace / "good.png"
+    Image.new("RGB", (320, 180), (255, 255, 255)).save(good)
+    broken = workspace / "broken.png"
+    broken.write_bytes(b"not a picture")
+    beat = plan.Beat(first=0, last=0, scene="s", motion="", hero=False, key_phrase="")
+    shots = [assets.Shot(index=0, start=0, end=5, beat=beat, image=good), assets.Shot(index=1, start=5, end=9, beat=beat, image=broken)]
+    run.report_picture_check(shots, 0.10)
+    out = capsys.readouterr().out
+    assert "Beat 2: could not be checked" in out and "Beat 1:" not in out

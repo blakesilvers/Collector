@@ -585,12 +585,14 @@ class Renderer:
 
     # ----- the paper theme (ink style) -----
 
-    def _text_start(self, t0: float) -> float:
-        """When text due at t0 may appear. In the paper theme, not before the picture then on screen is fully in."""
+    def _text_start(self, t0: float, at: float | None = None) -> float:
+        """When text due at t0 (belonging to the moment `at`, t0 by default) may appear. In the paper theme, not
+        before the picture on screen at `at` is fully in."""
         shots = self.tl.shots
         if not self.theme.text_waits_for_picture or not shots:
             return t0
-        i = max((k for k, s in enumerate(shots) if s.start <= t0), default=0)
+        at = t0 if at is None else at
+        i = max((k for k, s in enumerate(shots) if s.start <= at), default=0)
         if i == 0:  # the opening picture is there from the first frame
             return t0
         shot = shots[i]
@@ -678,7 +680,7 @@ class Renderer:
         for k, c in enumerate(self.tl.callouts):
             if not c.words:
                 continue
-            start = self._text_start(c.words[0][1] - 0.05)
+            start = self._text_start(c.words[0][1] - 0.05, at=c.words[0][1])  # the first word's picture
             if t < start or t > c.end:
                 continue
             if k not in self._callout_layers:
