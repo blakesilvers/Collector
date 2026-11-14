@@ -46,8 +46,8 @@ class Shot:
 
     @property
     def to_animate(self) -> bool:
-        """A clip still to be made: none yet, or its picture is being redrawn (a clip is made from its picture)."""
-        return bool(self.animate and self.clip) and (self.redraw or not self.clip.exists())
+        """A clip still to be made: none yet, or its picture is to be made again (a clip is made from its picture)."""
+        return bool(self.animate and self.clip) and (self.to_draw or not self.clip.exists())
 
     @property
     def duration(self) -> float:
@@ -346,6 +346,7 @@ def generate_assets(
             raise _OverAllowance("making it would go past what is left of the budget")
         return call()
     todo: dict[Path, Shot] = {}
+    made: set[Path] = set()  # pictures made in this run: any clip of theirs must be made again from them
     for s in shots:
         if s.to_draw:
             todo.setdefault(s.image, s)
@@ -365,6 +366,7 @@ def generate_assets(
                 s.image.write_bytes(data)
             ledger.add(image_usd, images=1)
             with lock:
+                made.add(s.image)
                 report.images_made += 1
             log.info("Picture %d/%d done", report.images_made, total)
             return True
@@ -387,12 +389,6 @@ def generate_assets(
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             list(pool.map(lambda s: draw(s, base_refs + anchors), pending))
 
-    # A picture that could not be redrawn keeps its old clip too: animating the old picture again would be wasted.
-    failed = set(report.image_failures)
-    for s in shots:
-        if s.redraw and s.index in failed:
-            s.redraw = False
-
     # Shots whose picture failed borrow their neighbour's, so the render always completes.
     for i, s in enumerate(shots):
         if s.image and not s.image.exists():
@@ -402,7 +398,12 @@ def generate_assets(
                 raise RuntimeError("no pictures could be generated; check the image API key and model name")
             s.image, s.animate, s.clip = donor, False, None
 
-    clips = [s for s in shots if s.to_animate]
+    # A clip is made when there is none, or when its picture was made in this run (a picture that could not be
+    # redrawn keeps its clip: animating the old picture again would be wasted).
+    clips = [s for s in shots if s.animate and s.clip and (not s.clip.exists() or s.image in made)]
+    for s in clips:
+        if s.clip.exists():  # its picture is new: the old clip goes aside now, so a failure cannot leave it in use
+            keep_aside(s.clip)
     if clips and motion is None:
         raise RuntimeError("animated shots were planned but no motion provider is configured")
 
@@ -416,10 +417,7 @@ def generate_assets(
             data = _retry(lambda: paid(s.clip_seconds * video_usd_per_second,
                                        lambda: motion.animate(s.image, motion_prompt(s.beat, guard), s.clip_seconds)),
                           attempts=2, wait=8.0, give_up=lambda e: model_missing(e) or over_allowance(e))
-            if s.clip.exists():  # made again from a redrawn picture: keep the old clip beside it
-                install(s.clip, data)
-            else:
-                s.clip.write_bytes(data)
+            s.clip.write_bytes(data)
             ledger.add(s.clip_seconds * video_usd_per_second, clip_seconds=s.clip_seconds)
             with lock:
                 report.clips_made += 1

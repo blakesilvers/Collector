@@ -2045,6 +2045,11 @@ def test_ink_key_phrase_is_whole_and_its_underline_draws_on(tmp_path: Path):
         m = (np.abs(a.astype(int) - b.astype(int)).sum(-1) > 24) & (np.abs(a.astype(int) - np.array(INK.ink)).max(-1) <= 40)
         return m & ~_grow((np.abs(a.astype(int) - np.array(INK.accent)).max(-1) <= 60), 4)
 
+    def footprint(a, b, at_least):  # everything the layer changed by at least this much
+        return np.abs(a.astype(int) - b.astype(int)).sum(-1) > at_least
+
+    early, full = footprint(shown[0], bare[0], 10), footprint(shown[1], bare[1], 24)  # half opacity: half the change
+    assert (early & full).sum() / max(1, full.sum()) > 0.95  # mid fade, the whole phrase is already there, only fainter
     first, last = type_mask(shown[1], bare[1]), type_mask(shown[3], bare[3])
     overlap = (first & last).sum() / max(1, (first | last).sum())
     # every word is up, in place, from the start (one added word would cost about a quarter; the camera drift a little)
@@ -2168,7 +2173,8 @@ def test_ink_key_phrase_lines_are_balanced_and_the_backing_hugs_them(tmp_path: P
 
 
 def test_ink_key_phrase_draws_exactly_the_vetted_words(tmp_path: Path, monkeypatch):
-    """What the renderer sets in type is the timed words, in order, nothing added, nothing dropped."""
+    """What the renderer sets in type is the timed words, in order, nothing added, nothing dropped. Quotation marks
+    and end punctuation are trimmed, as the dark theme has always trimmed them (the vetting ignores punctuation)."""
     from PIL import ImageDraw
 
     from sermon_visuals.studio import render
@@ -2215,17 +2221,22 @@ def test_redraw_of_an_animated_beat_redraws_its_clip(workspace: Path):
         model = "m"
 
         def animate(self, image, prompt, seconds):
-            calls.append(image.read_bytes()[:64].hex())
+            import hashlib
+            calls.append(hashlib.sha256(image.read_bytes()).hexdigest())
             return b"clip-" + str(len(calls)).encode()
 
     ledger = assets.Ledger(workspace / "spend.json")
-    assets.generate_assets(cfg, shots, "style", _ColourProvider(), Motion(), ledger, 0.1, 0.07, workers=1)
+    pictures = _ColourProvider()  # one provider throughout, so every picture it makes is different
+    assets.generate_assets(cfg, shots, "style", pictures, Motion(), ledger, 0.1, 0.07, workers=1)
     old_clip = shots[1].clip.read_bytes()
     shots[1].redraw = True
     est = assets.estimate(shots, 0.1, 0.07, 0.0)
     assert est.new_images == 1 and est.new_clip_seconds == 5  # the clip is priced again with the picture
-    assets.generate_assets(cfg, shots, "style", _ColourProvider(), Motion(), ledger, 0.1, 0.07, workers=1)
-    assert len(calls) == 3 and shots[1].clip.read_bytes() != old_clip  # animated again, from the new picture
+    assets.generate_assets(cfg, shots, "style", pictures, Motion(), ledger, 0.1, 0.07, workers=1)
+    import hashlib
+    new_picture = hashlib.sha256(shots[1].image.read_bytes()).hexdigest()
+    assert len(calls) == 3 and calls[-1] == new_picture and new_picture not in calls[:2]  # animated from the new picture
+    assert shots[1].clip.read_bytes() != old_clip
     assert list((workspace / "a").glob("clip_*.before-redraw*.mp4"))  # the old clip is kept too
 
 
@@ -2262,3 +2273,44 @@ def test_picture_check_never_stops_the_run(workspace: Path, capsys):
     run.report_picture_check(shots, 0.10)
     out = capsys.readouterr().out
     assert "Beat 2: could not be checked" in out and "Beat 1:" not in out
+
+
+def test_a_picture_made_again_never_keeps_an_old_clip(workspace: Path):
+    """However a picture comes to be made again (deleted by hand, or --redraw), its clip is made again from it; and
+    if that clip fails, the old clip is not left behind to be picked up by the next run."""
+    import hashlib
+
+    from sermon_visuals import imagegen
+    from sermon_visuals.studio import assets, plan
+    cfg = load_config(workspace / "config.toml")
+    beat = plan.Beat(first=0, last=0, scene="s", motion="m", hero=True, key_phrase="")
+    shot = assets.Shot(index=0, start=0.0, end=5.0, beat=beat, animate=True, clip_seconds=5)
+    assets.assign_paths([shot], workspace / "a", "style", imagegen.content_guard(cfg), "m")
+    seen: list[str] = []
+
+    class Motion:
+        model = "m"
+        fail = False
+
+        def animate(self, image, prompt, seconds):
+            if Motion.fail:
+                raise RuntimeError("the video model returned no video")
+            seen.append(hashlib.sha256(image.read_bytes()).hexdigest())
+            return b"clip" + str(len(seen)).encode()
+
+    ledger = assets.Ledger(workspace / "spend.json")
+    assets.generate_assets(cfg, [shot], "style", _ColourProvider(), Motion(), ledger, 0.1, 0.07, workers=1)
+    shot.image.unlink()  # the owner deletes the picture by hand
+    assert assets.estimate([shot], 0.1, 0.07, 0.0).new_clip_seconds == 5
+    assets.generate_assets(cfg, [shot], "style", _ColourProvider(), Motion(), ledger, 0.1, 0.07, workers=1)
+    assert seen[-1] == hashlib.sha256(shot.image.read_bytes()).hexdigest() and len(seen) == 2
+    # a redraw whose clip then fails: no stale clip is left for the next run
+    import sermon_visuals.studio.assets as A
+    A.time.sleep = lambda s: None
+    Motion.fail = True
+    shot.redraw, shot.animate = True, True
+    assets.assign_paths([shot], workspace / "a", "style", imagegen.content_guard(cfg), "m")
+    assets.generate_assets(cfg, [shot], "style", _ColourProvider(), Motion(), ledger, 0.1, 0.07, workers=1)
+    shot.redraw, shot.animate = False, True
+    assets.assign_paths([shot], workspace / "a", "style", imagegen.content_guard(cfg), "m")
+    assert not shot.clip.exists() and assets.estimate([shot], 0.1, 0.07, 0.0).new_clip_seconds == 5
