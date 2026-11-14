@@ -5,6 +5,7 @@ and composited by ffmpeg, so the words are set in a real font and never by an im
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -25,6 +26,22 @@ class Overlay(BaseModel):
     png: str
     start: float
     end: float
+
+
+@dataclass(frozen=True)
+class Band:
+    """How the scripture band is drawn. Only colours and the outline change between looks: the band's size,
+    position, type sizes and paging are the same for every look."""
+    fill: tuple[int, int, int, int] = (12, 10, 8, 200)
+    label: tuple[int, int, int, int] = (222, 206, 170, 255)
+    text: tuple[int, int, int, int] = (250, 246, 236, 255)
+    rule: tuple[int, int, int, int] | None = None   # a thin ink outline round the band
+    radius: int = 18
+
+
+DARK_BAND = Band()  # the band as it has always been: dark and translucent, cream type
+# For pictures on white paper: an opaque paper band, a thin ink rule, charcoal serif type, the reference in deep orange.
+PAPER_BAND = Band(fill=(252, 251, 248, 255), label=(180, 80, 30, 255), text=(32, 32, 32, 255), rule=(32, 32, 32, 255), radius=6)
 
 
 def validate_scriptures(items: list[Scripture], duration: float) -> list[Scripture]:
@@ -64,8 +81,9 @@ def paginate(text: str, max_words: int) -> list[str]:
     return pages
 
 
-def render_overlay(reference: str, version: str, text: str, width: int, height: int, fonts: Fonts, out: Path, position: str = "bottom") -> Path:
-    """Transparent full-frame PNG with a dark band (bottom or top) holding the reference and the passage."""
+def render_overlay(reference: str, version: str, text: str, width: int, height: int, fonts: Fonts, out: Path, position: str = "bottom",
+                   band: Band = DARK_BAND) -> Path:
+    """Transparent full-frame PNG with a band (bottom or top) holding the reference and the passage."""
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     margin = round(width * 0.06)
@@ -76,19 +94,24 @@ def render_overlay(reference: str, version: str, text: str, width: int, height: 
     body_font, lines, line_h = fit_text(draw, text, fonts.serif_at, box_w, round(height * 0.34), start=round(height * 0.045), minimum=round(height * 0.022), spacing=1.25)
     band_h = pad + ref_font.size + round(line_h * 0.5) + len(lines) * line_h + pad
     top = round(height * 0.04) if position == "top" else height - band_h - round(height * 0.04)
-    draw.rounded_rectangle((margin - pad, top, width - margin + pad, top + band_h), radius=18, fill=(12, 10, 8, 200))
+    box = (margin - pad, top, width - margin + pad, top + band_h)
+    if band.rule is None:
+        draw.rounded_rectangle(box, radius=band.radius, fill=band.fill)
+    else:
+        draw.rounded_rectangle(box, radius=band.radius, fill=band.fill, outline=band.rule, width=max(2, round(height * 0.002)))
     y = top + pad
-    draw.text((margin, y), label, font=ref_font, fill=(222, 206, 170, 255))
+    draw.text((margin, y), label, font=ref_font, fill=band.label)
     y += ref_font.size + round(line_h * 0.5)
     for line in lines:
-        draw.text((margin, y), line, font=body_font, fill=(250, 246, 236, 255))
+        draw.text((margin, y), line, font=body_font, fill=band.text)
         y += line_h
     out.parent.mkdir(parents=True, exist_ok=True)
     img.save(out, "PNG")
     return out
 
 
-def build_overlays(scriptures: list[Scripture], out_dir: Path, width: int, height: int, fonts: Fonts, max_words: int = 55, min_page_seconds: float = 4.0, position: str = "bottom") -> list[Overlay]:
+def build_overlays(scriptures: list[Scripture], out_dir: Path, width: int, height: int, fonts: Fonts, max_words: int = 55, min_page_seconds: float = 4.0, position: str = "bottom",
+                   band: Band = DARK_BAND) -> list[Overlay]:
     """Every word of every reading is shown. Long passages page through the reading's window; when the
     window is short, pages get denser (smaller type) before they get faster, and never get dropped."""
     overlays: list[Overlay] = []
@@ -101,7 +124,7 @@ def build_overlays(scriptures: list[Scripture], out_dir: Path, width: int, heigh
             pages = paginate(s.text, words_per_page)
         per = window / len(pages)
         for j, page in enumerate(pages, start=1):
-            png = render_overlay(s.reference, s.version, page, width, height, fonts, out_dir / f"verse_{i:03d}_{j}.png", position)
+            png = render_overlay(s.reference, s.version, page, width, height, fonts, out_dir / f"verse_{i:03d}_{j}.png", position, band)
             overlays.append(Overlay(png=str(png), start=s.start + (j - 1) * per, end=s.start + j * per))
     return overlays
 

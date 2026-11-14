@@ -1904,3 +1904,221 @@ def test_ink_picture_check_is_printed_after_generation(workspace: Path, monkeypa
         if expect:
             check = out[out.index("Picture check"):]
             assert "Beat 2: heavy grey shading" in check and "Beat 1:" not in check and "--redraw 2" in check
+
+
+# ---------- the ink (light paper) theme for the text layers ----------
+
+INK_FIXTURES = sorted((HERE / "fixtures" / "ink").glob("*.jpg"))  # six real ink pictures, downscaled
+
+
+def _rel_lum(rgb):
+    import numpy as np
+    c = np.asarray(rgb, np.float64) / 255.0
+    lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    return lin @ np.array([0.2126, 0.7152, 0.0722])
+
+
+def _grow(mask, r: int):
+    import numpy as np
+    from PIL import ImageFilter
+    im = Image.fromarray(mask.astype(np.uint8) * 255).filter(ImageFilter.MaxFilter(2 * r + 1))
+    return np.asarray(im) > 0
+
+
+def _contrast(with_text, without_text, colour, others=(), tol=40, ring=(3, 7), inset=0):
+    """WCAG contrast measured from pixels: the pixels a layer drew in `colour` against the frame right around them
+    (a ring 3 to 7 pixels out, leaving out anything drawn in the layer's other colours). `inset` keeps only pixels
+    that far inside the layer's box, so a panel's ink rule is not counted as type. Returns (median, worst decile)
+    of the ratio, and how many pixels were drawn in the colour."""
+    import numpy as np
+    a, b = with_text.astype(np.int32), without_text.astype(np.int32)
+    changed = np.abs(a - b).sum(-1) > 24
+    if inset:
+        ys, xs = np.nonzero(changed)
+        keep = np.zeros_like(changed)
+        keep[ys.min() + inset:ys.max() - inset + 1, xs.min() + inset:xs.max() - inset + 1] = True
+        changed &= keep
+
+    def near(c):
+        return np.abs(a - np.array(c)).max(-1) <= tol
+
+    glyph = changed & near(colour)
+    drawn = glyph.copy()
+    for c in others:
+        drawn |= changed & near(c)
+    bg = _grow(glyph, ring[1]) & ~_grow(drawn, ring[0])
+    if glyph.sum() < 20 or bg.sum() < 20:
+        return 0.0, 0.0, int(glyph.sum())
+    fg = float(np.median(_rel_lum(with_text[glyph])))
+    lum_bg = _rel_lum(with_text[bg])
+
+    def ratio(lum):
+        return (max(lum, fg) + 0.05) / (min(lum, fg) + 0.05)
+
+    return ratio(float(np.median(lum_bg))), ratio(float(np.percentile(lum_bg, 10))), int(glyph.sum())
+
+
+def _ink_timeline(pic, tmp: Path, *, callouts=(), cards=(), verses=False, chapters=(), shots=None, theme=None):
+    from sermon_visuals.studio import render
+    from sermon_visuals.studio.theme import INK
+    from sermon_visuals.verses import PAPER_BAND, Scripture, build_overlays
+    ovs = build_overlays([Scripture(start=1.0, end=7.0, reference="Luke 2:8", version="KJV",
+                                    text="And there were in the same country shepherds abiding in the field, keeping watch "
+                                         "over their flock by night.")],
+                         tmp / "verses", 960, 540, compose.Fonts.resolve(), band=PAPER_BAND) if verses else []
+    return render.Timeline(duration=10.0, shots=shots or [render.ShotSpec(0.0, 10.0, pic)], callouts=list(callouts),
+                           cards=list(cards), chapters=list(chapters), verses=ovs, theme=theme or INK)
+
+
+def _frames(tl, times, W=960, H=540):
+    from sermon_visuals.studio import render
+    r = render.Renderer(tl, W, H, 24)
+    out = [r.frame(t) for t in times]
+    r.close()
+    return out
+
+
+def _phrase(t0=1.0):
+    from sermon_visuals.studio import render
+    return render.Callout(words=[("Nobody", t0), ("kept", t0 + 0.3), ("it", t0 + 0.6), ("then.", t0 + 0.9)], end=t0 + 5.0)
+
+
+def _card(start=1.0, end=7.0):
+    from sermon_visuals.studio import plan, render
+    card = plan.Card(type="list", title="Three reasons", items=[
+        plan.CardItem(label="No date given", detail="Scripture is silent"), plan.CardItem(label="No feast kept", detail="")])
+    return render.CardSpec(card=card, start=start, end=end, item_times=[start + 0.2, start + 0.6])
+
+
+def test_ink_text_layers_meet_contrast_over_real_ink_pictures(tmp_path: Path):
+    from sermon_visuals.studio import render
+    from sermon_visuals.studio.theme import INK
+    assert len(INK_FIXTURES) >= 5
+    for pic in INK_FIXTURES:
+        # key phrase: charcoal on the picture, at least 7:1; its orange underline at least 4.5:1
+        with_text, = _frames(_ink_timeline(pic, tmp_path, callouts=[_phrase()]), [4.0])
+        bare, = _frames(_ink_timeline(pic, tmp_path), [4.0])
+        med, low, n = _contrast(with_text, bare, INK.ink, others=[INK.accent])
+        assert n > 500 and med >= 7.0 and low >= 4.5, (pic.name, "key phrase", med, low)
+        med, low, n = _contrast(with_text, bare, INK.accent, others=[INK.ink])
+        assert n > 100 and med >= 4.5, (pic.name, "underline", med)
+        # scripture band: charcoal serif at least 7:1, the orange reference at least 4.5:1
+        with_band, = _frames(_ink_timeline(pic, tmp_path, verses=True), [4.0])
+        med, low, n = _contrast(with_band, bare, INK.ink, others=[INK.accent], inset=10)
+        assert n > 500 and med >= 7.0 and low >= 7.0, (pic.name, "scripture", med, low)
+        med, low, n = _contrast(with_band, bare, INK.accent, others=[INK.ink], inset=10)
+        assert n > 50 and med >= 4.5, (pic.name, "reference", med)
+        # info card: labels at least 7:1, the orange title at least 4.5:1
+        with_card, = _frames(_ink_timeline(pic, tmp_path, cards=[_card()]), [4.0])
+        med, low, n = _contrast(with_card, bare, INK.ink, others=[INK.accent, INK.muted], inset=10)
+        assert n > 200 and med >= 7.0 and low >= 7.0, (pic.name, "card", med, low)
+        med, low, n = _contrast(with_card, bare, INK.accent, others=[INK.ink, INK.muted], inset=10)
+        assert n > 50 and med >= 4.5, (pic.name, "card title", med)
+    # chapter card and chip
+    pic = INK_FIXTURES[0]
+    chapters = [render.ChapterMark(1, "Nobody knows the date", 0.0)]
+    title, chip = _frames(_ink_timeline(pic, tmp_path, chapters=chapters), [1.2, 4.0])
+    bare1, bare4 = _frames(_ink_timeline(pic, tmp_path), [1.2, 4.0])
+    med, low, n = _contrast(title, bare1, INK.ink, others=[INK.accent])
+    assert n > 500 and med >= 7.0, ("chapter", med)
+    med, low, n = _contrast(chip, bare4, INK.ink, others=[INK.accent], inset=4)
+    assert n > 100 and med >= 7.0, ("chip", med)
+
+
+def test_ink_key_phrase_is_whole_and_its_underline_draws_on(tmp_path: Path):
+    from sermon_visuals.studio.theme import INK
+    pic = INK_FIXTURES[1]
+    times = [1.05, 1.5, 2.6]
+    shown = _frames(_ink_timeline(pic, tmp_path, callouts=[_phrase()]), times)
+    bare = _frames(_ink_timeline(pic, tmp_path), times)
+    ink_px = [_contrast(a, b, INK.ink, others=[INK.accent])[2] for a, b in zip(shown, bare)]
+    accent_px = [_contrast(a, b, INK.accent, others=[INK.ink])[2] for a, b in zip(shown, bare)]
+    assert ink_px[1] > 500 and abs(ink_px[1] - ink_px[2]) <= 0.02 * ink_px[2]  # every word is up from the start
+    assert accent_px[0] < accent_px[1] < accent_px[2]                          # the underline follows the words
+
+
+def test_ink_key_phrase_shows_the_vetted_words():
+    from sermon_visuals.studio import render
+    c = render.Callout(words=[("“Not", 1.0), ("a", 1.2), ("hint", 1.4), ("in", 1.6), ("Acts,", 1.8)], end=5.0)
+    assert render.callout_words(c) == ["Not", "a", "hint", "in", "Acts"]  # his words, in order, as spoken; marks dropped
+
+
+def test_ink_text_waits_for_its_picture(tmp_path: Path):
+    """A key phrase or card on a new picture appears only once that picture has finished inking in."""
+    from sermon_visuals.studio import render
+    a = _golden_picture(tmp_path / "a.png", 1)
+    b = _golden_picture(tmp_path / "b.png", 2)
+    shots = [render.ShotSpec(0.0, 5.0, a), render.ShotSpec(5.0, 10.0, b)]
+    times = [4.9, 5.3, 5.7, 5.9]
+    for layer in ({"callouts": [_phrase(5.05)]}, {"cards": [_card(5.3, 9.0)]}):
+        shown = _frames(_ink_timeline(None, tmp_path, shots=shots, **layer), times)
+        bare = _frames(_ink_timeline(None, tmp_path, shots=shots), times)
+        assert (shown[1] == bare[1]).all() and (shown[2] == bare[2]).all(), layer  # picture still inking in
+        assert not (shown[3] == bare[3]).all(), layer                               # drawn: the text follows
+
+
+def test_ink_key_phrase_avoids_the_busy_side_and_never_sits_on_the_band(tmp_path: Path):
+    import numpy as np
+    from PIL import ImageDraw
+
+    from sermon_visuals.studio.theme import INK
+    for busy_left in (True, False):
+        im = Image.new("RGB", (1536, 864), (255, 255, 255))
+        d = ImageDraw.Draw(im)
+        x0 = 60 if busy_left else 800
+        for k in range(0, 680, 9):  # dense hatching over one upper half
+            d.line((x0 + k, 60, x0 + k - 40, 560), fill=(25, 25, 25), width=4)
+        pic = tmp_path / f"busy_{busy_left}.png"
+        im.save(pic)
+        shown, = _frames(_ink_timeline(pic, tmp_path, callouts=[_phrase()]), [3.0])
+        bare, = _frames(_ink_timeline(pic, tmp_path), [3.0])
+        a = shown.astype(int)
+        glyph = (np.abs(a - bare.astype(int)).sum(-1) > 24) & (np.abs(a - np.array(INK.ink)).max(-1) <= 40)
+        xs = np.nonzero(glyph)[1]
+        assert len(xs) > 500 and ((xs.mean() > 480) if busy_left else (xs.mean() < 480)), busy_left
+    # during a scripture reading the band is shown and the key phrase is not
+    pic = INK_FIXTURES[0]
+    both, = _frames(_ink_timeline(pic, tmp_path, callouts=[_phrase()], verses=True), [3.0])
+    band, = _frames(_ink_timeline(pic, tmp_path, verses=True), [3.0])
+    assert (both == band).all()
+
+
+def test_ink_band_keeps_the_same_size_place_and_timing(tmp_path: Path):
+    import numpy as np
+
+    from sermon_visuals.verses import DARK_BAND, PAPER_BAND, Scripture, build_overlays, render_overlay
+    fonts = compose.Fonts.resolve()
+    text = " ".join(["And the angel said unto them, Fear not."] * 20)
+    for start, end in ((10, 22), (0, 6)):
+        s = [Scripture(start=start, end=end, reference="Luke 2:10", version="KJV", text=text)]
+        dark = build_overlays(s, tmp_path / f"d{start}", 1920, 1080, fonts, 55, 4.0)
+        paper = build_overlays(s, tmp_path / f"p{start}", 1920, 1080, fonts, 55, 4.0, band=PAPER_BAND)
+        assert [(o.start, o.end) for o in dark] == [(o.start, o.end) for o in paper]
+    for band, name in ((DARK_BAND, "d.png"), (PAPER_BAND, "p.png")):
+        render_overlay("Luke 2:10", "KJV", text[:300], 1920, 1080, fonts, tmp_path / name, band=band)
+    with Image.open(tmp_path / "d.png") as d, Image.open(tmp_path / "p.png") as p:
+        assert d.getchannel("A").getbbox() == p.getchannel("A").getbbox()
+        centre = np.asarray(p.convert("RGBA"))[1080 - 60, 120]
+        assert tuple(centre) == (252, 251, 248, 255)  # opaque paper
+
+
+def test_theme_follows_the_style(tmp_path: Path):
+    from sermon_visuals.studio import plan, run
+    from sermon_visuals.studio.levels import layers_for
+    from sermon_visuals.studio.theme import DARK, INK, theme_for
+    assert theme_for("ink") is INK and theme_for("INK ") is INK
+    for style in ("graphic", "painterly", "woodcut", "My own watercolour sentence.", ""):
+        assert theme_for(style) is DARK
+    words = _studio_words()
+    sents = plan.sentences_from_words(words)
+    board = _studio_board().model_copy(update={"readings": [plan.Reading(first=1, last=1, reference="Luke 1:1", version="",
+                                                                          text="They had no idea.")]})
+    shots = run.shots_from(board, sents, words[-1].e + 1)
+    for style, theme in (("ink", INK), ("graphic", DARK), (None, DARK)):
+        kw = {} if style is None else {"style": style}
+        tl = run.build_timeline(board, words, sents, words[-1].e + 1, shots, layers_for(3, {}), tmp_path / str(style),
+                                640, 360, 55, 4.0, spans=None, **kw)
+        assert tl.theme is theme
+        with Image.open(tl.verses[0].png) as im:
+            px = im.convert("RGBA").getpixel((40, 360 - 20))
+        assert (px == (252, 251, 248, 255)) is (theme is INK), style

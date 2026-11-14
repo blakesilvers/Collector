@@ -10,11 +10,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from ..compose import SANS_CANDIDATES, SERIF_CANDIDATES, cover, wrap
 from ..verses import Overlay
+from . import ink
 from .plan import Card, Word
+from .theme import DARK as DARK_THEME, Theme
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +30,8 @@ DISPLAY_CANDIDATES = [
     "/System/Library/Fonts/Supplemental/Arial Black.ttf", "/Library/Fonts/Arial Black.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
 ]
+# A legible hand-lettered face for the ink theme's key phrases and chapter titles; the display face if it is missing.
+HAND_CANDIDATES = ["C:/Windows/Fonts/segoeprb.ttf", "/Library/Fonts/Segoe Print Bold.ttf"]
 SANS_BOLD_CANDIDATES = [
     "C:/Windows/Fonts/arialbd.ttf", "C:/Windows/Fonts/segoeuib.ttf",
     "/System/Library/Fonts/Supplemental/Arial Bold.ttf", "/Library/Fonts/Arial Bold.ttf",
@@ -48,6 +52,7 @@ class Type:
         self.bold = _first(SANS_BOLD_CANDIDATES, SANS_CANDIDATES)
         self.sans = _first(SANS_CANDIDATES, [])
         self.serif = _first(SERIF_CANDIDATES, SANS_CANDIDATES)
+        self.hand = _first(HAND_CANDIDATES, [self.display])
         self._cache: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
 
     def get(self, which: str, size: int) -> ImageFont.FreeTypeFont:
@@ -102,6 +107,7 @@ class Timeline:
     ink_in: bool = True
     camera: float = 0.1
     show_chapters: bool = True
+    theme: Theme = DARK_THEME
 
 
 # ---------- small helpers ----------
@@ -157,6 +163,35 @@ def caption_chunks(words: list[Word], max_words: int = 6, max_gap: float = 0.6) 
     return chunks
 
 
+# How long _base takes to bring in a new picture: the ink-in over a still, or the dissolve into a clip. In the paper
+# theme key phrases and cards wait this long after their picture's cut, so words never arrive before their picture.
+INK_IN_SECONDS = 0.75
+CROSSFADE_SECONDS = 0.3
+PHRASE_MARKS = ".,;:!?\"“”"
+
+
+def callout_words(c: Callout) -> list[str]:
+    """The words a key phrase shows in the paper theme: exactly the vetted, timed words, in order and as spoken, with
+    the same punctuation trimmed as the dark theme trims (which also capitalises them)."""
+    return [w.strip(PHRASE_MARKS) for w, _ in c.words]
+
+
+def hand_stroke(d: ImageDraw.ImageDraw, x0: float, x1: float, y: float, width: int, colour, seed: int) -> None:
+    """A marker underline from x0 to x1: a gentle wobble and a slight rise, round at both ends."""
+    if x1 - x0 < 1:
+        return
+    rng = np.random.default_rng(seed)
+    phase, period = rng.uniform(0, 6.28), rng.uniform(260, 420)
+    xs = np.arange(x0, x1 + 1, 6.0)
+    ys = y + width * 0.35 * np.sin(xs / period * 6.28 + phase) - (xs - x0) * 0.012
+    pts = [(float(a), float(b)) for a, b in zip(xs, ys)]
+    if len(pts) > 1:
+        d.line(pts, fill=colour, width=width, joint="curve")
+    r = width / 2
+    for px, py in (pts[0], pts[-1]):
+        d.ellipse((px - r, py - r, px + r, py + r), fill=colour)
+
+
 class ClipReader:
     """Streams an animated clip's frames from ffmpeg, stretched (up to 1.5x) to fill its shot."""
 
@@ -191,6 +226,7 @@ class ClipReader:
 class Renderer:
     def __init__(self, tl: Timeline, W: int = 1920, H: int = 1080, fps: int = 24):
         self.tl, self.W, self.H, self.fps = tl, W, H, fps
+        self.theme = tl.theme
         self.type = Type()
         self.margin = round(W * 0.05)
         self._shot_i = -1
@@ -225,7 +261,10 @@ class Renderer:
         else:
             slack = 1.0 + self.tl.camera + 0.02
             with Image.open(shot.image) as im:
-                self._src = cover(im.convert("RGB"), round(self.W * slack), round(self.H * slack))
+                picture = im.convert("RGB")
+            if self.theme.clean_pictures:  # ink: a drawing on clean white paper (the file on disk is not touched)
+                picture = ink.normalize(picture)
+            self._src = cover(picture, round(self.W * slack), round(self.H * slack))
 
     def _camera(self, i: int, u: float) -> np.ndarray:
         """One of six camera moves over a still, chosen by shot number so neighbours differ."""
@@ -342,6 +381,8 @@ class Renderer:
         return states
 
     def _draw_callout(self, frame: np.ndarray, t: float) -> None:
+        if self.theme.paper:
+            return self._draw_callout_paper(frame, t)
         for k, c in enumerate(self.tl.callouts):
             if not c.words or t < c.words[0][1] - 0.05 or t > c.end:
                 continue
@@ -377,13 +418,19 @@ class Renderer:
         head = pad + title_f.size + gap
         row_h = [len(ll) * lh + len(dl) * dh + gap for ll, dl in rows]
         ph = head + sum(row_h) + pad - gap + pad // 2
+        th = self.theme
+        accent, text, muted = (th.accent, th.ink, th.muted) if th.paper else (ACCENT, CREAM, MUTED)
         states = []
         for upto in range(0, len(rows) + 1):
             img = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
             d = ImageDraw.Draw(img)
-            d.rounded_rectangle((0, 0, pw - 1, ph - 1), radius=22, fill=(*DARK, 225))
-            d.rounded_rectangle((0, 0, 9, ph - 1), radius=4, fill=(*ACCENT, 255))
-            d.text((pad, pad), card.title.upper(), font=title_f, fill=(*ACCENT, 255))
+            if th.paper:  # a paper panel with a thin ink rule
+                d.rounded_rectangle((0, 0, pw - 1, ph - 1), radius=12, fill=(*th.paper_rgb, 246), outline=(*th.ink, 255),
+                                    width=max(2, round(self.H * 0.0022)))
+            else:
+                d.rounded_rectangle((0, 0, pw - 1, ph - 1), radius=22, fill=(*DARK, 225))
+                d.rounded_rectangle((0, 0, 9, ph - 1), radius=4, fill=(*ACCENT, 255))
+            d.text((pad, pad), card.title.upper(), font=title_f, fill=(*accent, 255))
             y = head
             for j, (ll, dl) in enumerate(rows):
                 if j >= upto:
@@ -392,13 +439,13 @@ class Renderer:
                 if card.type != "definition":
                     cx, cy, r = pad + round(self.H * 0.009), y + lh // 2, round(self.H * 0.009)
                     if card.type == "timeline" and j + 1 < upto:
-                        d.line((cx, cy, cx, cy + row_h[j]), fill=(*MUTED, 255), width=3)
-                    d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(*ACCENT, 255))
+                        d.line((cx, cy, cx, cy + row_h[j]), fill=(*muted, 255), width=3)
+                    d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(*accent, 255))
                 for line in ll:
-                    d.text((inset, y), line, font=label_f, fill=(*ACCENT, 255) if newest else (*CREAM, 255))
+                    d.text((inset, y), line, font=label_f, fill=(*accent, 255) if newest else (*text, 255))
                     y += lh
                 for line in dl:
-                    d.text((inset, y), line, font=detail_f, fill=(*MUTED, 255))
+                    d.text((inset, y), line, font=detail_f, fill=(*muted, 255))
                     y += dh
                 y += gap
             states.append((np.asarray(img).copy(), 0, 0))
@@ -406,14 +453,15 @@ class Renderer:
 
     def _draw_card(self, frame: np.ndarray, t: float) -> bool:
         for k, spec in enumerate(self.tl.cards):
-            if t < spec.start or t > spec.end:
+            start = self._text_start(spec.start)
+            if t < start or t > spec.end:
                 continue
             if k not in self._card_layers:
                 self._card_layers = {k: self._build_card(k)}
             shown = sum(1 for s in spec.item_times if s <= t)
             layer, _, _ = self._card_layers[k][shown]
-            slide = round((1 - ease((t - spec.start) / 0.35)) * self.W * 0.06)
-            op = envelope(t, spec.start, spec.end, 0.25, 0.3)
+            slide = round((1 - ease((t - start) / 0.35)) * self.W * 0.06)
+            op = envelope(t, start, spec.end, 0.25, 0.3)
             blend(frame, layer, self.W - layer.shape[1] - self.margin + slide, round(self.H * 0.13), op)
             return True
         return False
@@ -457,8 +505,14 @@ class Renderer:
             img = Image.new("RGBA", (total + 60, round(font.size * 1.7)), (0, 0, 0, 0))
             d = ImageDraw.Draw(img)
             x = 30.0
+            th = self.theme
+            if th.paper:  # charcoal on a paper strip, the spoken word in deep orange, no outline
+                d.rounded_rectangle((0, 0, img.width - 1, img.height - 1), radius=10, fill=(*th.paper_rgb, 235))
             for j, w in enumerate(chunk):
-                self._stroke_text(d, (round(x), 8), w.w, font, (*ACCENT, 255) if j == active else (*CREAM, 255), sw)
+                if th.paper:
+                    d.text((round(x), 8), w.w, font=font, fill=(*(th.accent if j == active else th.ink), 255))
+                else:
+                    self._stroke_text(d, (round(x), 8), w.w, font, (*ACCENT, 255) if j == active else (*CREAM, 255), sw)
                 x += widths[j] + space
             self._cap_cache[key] = (np.asarray(img).copy(), 0, 0)
         layer = self._cap_cache[key][0]
@@ -473,6 +527,8 @@ class Renderer:
 
     def _draw_chapter(self, frame: np.ndarray, t: float) -> bool:
         """Returns True while the full-screen chapter card is up."""
+        if self.theme.paper:
+            return self._draw_chapter_paper(frame, t)
         c = self._chapter_at(t)
         if c is None or not self.tl.show_chapters:
             return False
@@ -520,8 +576,174 @@ class Renderer:
     def _draw_progress(self, frame: np.ndarray, t: float) -> None:
         h = max(4, round(self.H * 0.007))
         w = round(self.W * min(t / max(self.tl.duration, 1e-6), 1.0))
+        if self.theme.paper:  # a light track, the deep orange fill
+            frame[self.H - h:, :] = self.theme.track
+            frame[self.H - h:, :w] = self.theme.accent
+            return
         frame[self.H - h:, :] = (frame[self.H - h:, :].astype(np.float32) * 0.45).astype(np.uint8)
         frame[self.H - h:, :w] = ACCENT
+
+    # ----- the paper theme (ink style) -----
+
+    def _text_start(self, t0: float) -> float:
+        """When text due at t0 may appear. In the paper theme, not before the picture then on screen is fully in."""
+        shots = self.tl.shots
+        if not self.theme.text_waits_for_picture or not shots:
+            return t0
+        i = max((k for k, s in enumerate(shots) if s.start <= t0), default=0)
+        if i == 0:  # the opening picture is there from the first frame
+            return t0
+        shot = shots[i]
+        animated = bool(shot.clip and shot.clip.exists())
+        settle = INK_IN_SECONDS if self.tl.ink_in and not animated else CROSSFADE_SECONDS
+        return max(t0, shot.start + settle)
+
+    def _place(self, frame: np.ndarray, w: int, h: int) -> tuple[int, int]:
+        """The emptiest of three places for a block of text (upper left, upper right, lower left), judged by how
+        much ink the picture has there; upper left wins ties. All three stay clear of the chapter label, the
+        captions line and the progress bar."""
+        top = round(self.H * 0.15)
+        low = max(top, round(self.H * 0.80) - h)
+        spots = [(self.margin, top), (self.W - self.margin - w, top), (self.margin, low)]
+        dark = 1.0 - frame[::4, ::4].astype(np.float32).mean(axis=2) / 255.0
+        best, best_score = spots[0], None
+        for n, (x, y) in enumerate(spots):
+            region = dark[max(y, 0) // 4:(y + h) // 4 + 1, max(x, 0) // 4:(x + w) // 4 + 1]
+            score = (float(region.mean()) if region.size else 1.0) + 0.004 * n
+            if best_score is None or score < best_score:
+                best, best_score = (x, y), score
+        return best
+
+    def _paper_callout(self, k: int, frame: np.ndarray) -> dict:
+        """The whole phrase, charcoal and hand-lettered on a soft paper backing, plus where its underline runs."""
+        th, c = self.theme, self.tl.callouts[k]
+        words = callout_words(c)
+        probe = ImageDraw.Draw(Image.new("RGBA", (8, 8)))
+        size, max_w = round(self.H * 0.074), round(self.W * 0.5)
+        while True:
+            font = self.type.get("hand", size)
+            lines = wrap(probe, " ".join(w for w in words if w), font, max_w)
+            if len(lines) <= 3 or size <= round(self.H * 0.045):
+                break
+            size -= 4
+        ascent, descent = font.getmetrics()
+        line_h = round((ascent + descent) * 1.02)
+        space = probe.textlength(" ", font=font)
+        pad = round(size * 0.5)
+        sw = max(4, size // 9)
+        # where each word sits, in order (wrap keeps the order of the non-empty words)
+        order = [j for j, w in enumerate(words) if w]
+        spans: list[tuple[int, float, float] | None] = [None] * len(words)
+        runs, n = [], 0
+        for li, line in enumerate(lines):
+            x = 0.0
+            for token in line.split():
+                j = order[n]
+                n += 1
+                wlen = probe.textlength(token, font=font)
+                spans[j] = (li, pad + x, pad + x + wlen)
+                x += wlen + space
+            runs.append((pad, pad + x - space, pad + li * line_h + ascent + round(descent * 0.55)))
+        bw = round(max(r[1] for r in runs) + pad)
+        bh = round(pad * 2 + len(lines) * line_h)
+        backing = Image.new("L", (bw, bh), 0)
+        ImageDraw.Draw(backing).rounded_rectangle((pad // 3, pad // 3, bw - pad // 3, bh - pad // 3), radius=pad, fill=230)
+        backing = backing.filter(ImageFilter.GaussianBlur(pad / 3))
+        img = Image.new("RGBA", (bw, bh), (*th.paper_rgb, 0))
+        img.putalpha(backing)
+        d = ImageDraw.Draw(img)
+        for li, line in enumerate(lines):
+            d.text((pad, pad + li * line_h), line, font=font, fill=(*th.ink, 255))
+        x, y = self._place(frame, bw, bh)
+        times = [s for _, s in c.words] + [c.words[-1][1] + 0.35]
+        return {"layer": np.asarray(img).copy(), "x": x, "y": y, "runs": runs, "spans": spans, "times": times,
+                "sw": sw, "size": (bw, bh), "under": {}}
+
+    def _draw_callout_paper(self, frame: np.ndarray, t: float) -> None:
+        for k, c in enumerate(self.tl.callouts):
+            if not c.words:
+                continue
+            start = self._text_start(c.words[0][1] - 0.05)
+            if t < start or t > c.end:
+                continue
+            if k not in self._callout_layers:
+                self._callout_layers = {k: self._paper_callout(k, frame)}  # keep only the active one
+            co = self._callout_layers[k]
+            op = min(1.0, (t - start) / 0.2, (c.end - t) / 0.3)
+            blend(frame, co["layer"], co["x"], co["y"], op)
+            # the underline runs under each word as it is spoken (and catches up at once if the words came first)
+            reach: list[float | None] = [None] * len(co["runs"])
+            times = co["times"]
+            for j, span in enumerate(co["spans"]):
+                if span is None or t < times[j]:
+                    continue
+                li, xa, xb = span
+                u = min(1.0, (t - times[j]) / max(0.15, times[j + 1] - times[j]))
+                end = xa + u * (xb - xa)
+                reach[li] = end if reach[li] is None else max(reach[li], end)
+            key = tuple(None if r is None else int(r) // 4 for r in reach)
+            if key not in co["under"]:
+                img = Image.new("RGBA", co["size"], (0, 0, 0, 0))
+                d = ImageDraw.Draw(img)
+                for li, r in enumerate(reach):
+                    if r is not None:
+                        x0, _, yu = co["runs"][li]
+                        hand_stroke(d, x0, r, yu, co["sw"], (*self.theme.accent, 255), seed=k * 7 + li)
+                co["under"] = {key: np.asarray(img).copy()}
+            blend(frame, co["under"][key], co["x"], co["y"], op)
+            return
+
+    def _draw_chapter_paper(self, frame: np.ndarray, t: float) -> bool:
+        """The chapter card washes the picture back toward paper and hand-letters the title over it; between cards
+        a small paper label with a thin ink rule names the chapter."""
+        th = self.theme
+        c = self._chapter_at(t)
+        if c is None or not self.tl.show_chapters:
+            return False
+        flash = envelope(t, c.start, c.start + 2.6, 0.3, 0.45)
+        if flash > 0:
+            paper = np.array(th.paper_rgb, np.float32)
+            frame[:] = (frame.astype(np.float32) + (paper - frame.astype(np.float32)) * (0.86 * flash)).astype(np.uint8)
+            if c.number not in self._chapter_cards:
+                img = Image.new("RGBA", (self.W, self.H), (0, 0, 0, 0))
+                d = ImageDraw.Draw(img)
+                small = self.type.get("bold", round(self.H * 0.03))
+                size = round(self.H * 0.1)
+                while True:
+                    big = self.type.get("hand", size)
+                    lines = wrap(d, c.title, big, round(self.W * 0.8))
+                    if len(lines) <= 2 or size < round(self.H * 0.06):
+                        break
+                    size -= 6
+                lh = round(size * 1.3)
+                y = (self.H - lh * len(lines)) // 2
+                label = f"PART {c.number}"
+                d.text(((self.W - d.textlength(label, font=small)) / 2, y - small.size * 2.2), label, font=small,
+                       fill=(*th.accent, 255))
+                for line in lines:
+                    d.text(((self.W - d.textlength(line, font=big)) / 2, y), line, font=big, fill=(*th.ink, 255))
+                    y += lh
+                hand_stroke(d, self.W / 2 - size * 1.2, self.W / 2 + size * 1.2, y + 10, max(5, size // 10),
+                            (*th.accent, 255), seed=c.number)
+                self._chapter_cards = {c.number: trim(img)}
+            layer, x, y = self._chapter_cards[c.number]
+            rise = round((1 - ease((t - c.start) / 0.4)) * self.H * 0.02)
+            blend(frame, layer, x, y + rise, flash)
+            return True
+        if c.number not in self._chips:
+            font = self.type.get("bold", round(self.H * 0.022))
+            text = f"{c.number}  ·  {c.title.upper()}"
+            probe = ImageDraw.Draw(Image.new("RGBA", (8, 8)))
+            w = round(probe.textlength(text, font=font)) + round(self.H * 0.04)
+            h = round(font.size * 2.0)
+            img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+            d = ImageDraw.Draw(img)
+            d.rounded_rectangle((0, 0, w - 1, h - 1), radius=h // 2, fill=(*th.paper_rgb, 240), outline=(*th.ink, 255),
+                                width=max(2, round(self.H * 0.002)))
+            d.text((round(self.H * 0.02), (h - font.size) // 2 - 2), text, font=font, fill=(*th.ink, 255))
+            self._chips = {c.number: (np.asarray(img).copy(), 0, 0)}
+        blend(frame, self._chips[c.number][0], self.margin, round(self.H * 0.045), 1.0)
+        return False
 
     # ----- frame -----
 

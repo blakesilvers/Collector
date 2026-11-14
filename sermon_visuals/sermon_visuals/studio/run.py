@@ -16,6 +16,7 @@ from ..imagegen import ImageProvider, content_guard, make_provider
 from ..transcribe import edited_transcript, find_audio, get_transcript
 from . import assets, ink, plan, render
 from .levels import LEVEL_BLURBS, STYLES, is_whiteboard, layers_for
+from .theme import theme_for
 
 log = logging.getLogger(__name__)
 
@@ -33,9 +34,11 @@ def studio_dir(cfg: Config, stem: str, start: float, minutes: float | None) -> P
 
 def build_timeline(board: plan.Storyboard, words: list[plan.Word], sentences: list[plan.Sentence], duration: float,
                    shots: list[assets.Shot], layers, overlay_dir: Path, W: int, H: int, max_words: int, min_page_seconds: float,
-                   *, spans: list[attribution.Span] | None) -> render.Timeline:
+                   *, spans: list[attribution.Span] | None, style: str = "") -> render.Timeline:
     """`spans` is the reference transcript split by attribution.split_transcript, or None when there is none
-    (then key phrases are checked against the audio only)."""
+    (then key phrases are checked against the audio only). `style` is the [studio] style name; it chooses how the
+    text layers look (theme.theme_for), never which words are shown or when."""
+    theme = theme_for(style)
     starts = {s.beat.first: s.start for s in shots}
     # scripture readings -> overlay pages
     scriptures = []
@@ -45,7 +48,8 @@ def build_timeline(board: plan.Storyboard, words: list[plan.Word], sentences: li
         scriptures.append(verses.Scripture(start=s, end=e, reference=r.reference, version=r.version, text=r.text))
     scriptures = verses.validate_scriptures(scriptures, duration)
     fonts = compose.Fonts.resolve()
-    overlays = verses.build_overlays(scriptures, overlay_dir, W, H, fonts, max_words, min_page_seconds, "bottom") if scriptures else []
+    overlays = verses.build_overlays(scriptures, overlay_dir, W, H, fonts, max_words, min_page_seconds, "bottom",
+                                     band=theme.band) if scriptures else []
     shown, _ = plan.vet_key_phrases(board, words, sentences, spans, layers.cards) if layers.callouts else ({}, [])
 
     callouts, cards = [], []
@@ -76,6 +80,7 @@ def build_timeline(board: plan.Storyboard, words: list[plan.Word], sentences: li
         callouts=callouts, cards=cards, chapters=chapters, verses=overlays,
         caption_words=words if layers.captions else [],
         progress=layers.progress, ink_in=layers.ink_in, camera=layers.camera, show_chapters=layers.chapters,
+        theme=theme,
     )
 
 
@@ -345,7 +350,7 @@ def run_studio(
     scale = 0.5 if preview else 1.0
     W, H = int(st.width * scale) // 2 * 2, int(st.height * scale) // 2 * 2
     tl = build_timeline(board, words, sentences, length, shots, layers, work / f"verse_overlays_{W}", W, H,
-                        cfg.verses.max_words, cfg.verses.min_page_seconds, spans=spans)
+                        cfg.verses.max_words, cfg.verses.min_page_seconds, spans=spans, style=st.style)
     name = f"{stem}_L{level}{'_draft' if draft else ''}{'_preview' if preview else ''}"
     out = work / f"{name}.mp4"
     sheet = work / f"{name}_contact_sheet.jpg"
