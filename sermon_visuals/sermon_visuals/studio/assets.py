@@ -38,6 +38,11 @@ class Shot:
     clip: Path | None = None
     clip_seconds: int = 0
     animate: bool = False
+    redraw: bool = False  # draw this picture again even though it is cached (the old one is kept beside it)
+
+    @property
+    def to_draw(self) -> bool:
+        return bool(self.image) and (self.redraw or not self.image.exists())
 
     @property
     def duration(self) -> float:
@@ -176,8 +181,9 @@ def assign_paths(shots: list[Shot], assets_dir: Path, style: str, guard: str, mo
 
 
 def estimate(shots: list[Shot], image_usd: float, video_usd_per_second: float, storyboard_usd: float) -> Estimate:
-    new_images = len({s.image for s in shots if s.image and not s.image.exists()})
-    cached_images = len({s.image for s in shots if s.image and s.image.exists()})
+    new = {s.image for s in shots if s.to_draw}
+    new_images = len(new)
+    cached_images = len({s.image for s in shots if s.image and s.image.exists()} - new)
     new_secs = sum(s.clip_seconds for s in shots if s.animate and s.clip and not s.clip.exists())
     cached_clips = sum(1 for s in shots if s.animate and s.clip and s.clip.exists())
     return Estimate(new_images, cached_images, new_secs, cached_clips, new_images * image_usd, new_secs * video_usd_per_second, storyboard_usd)
@@ -230,6 +236,16 @@ class Ledger:
             self.data["usd"] = round(self.data["usd"] + usd, 4)
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
+
+
+def keep_aside(path: Path) -> Path:
+    """Rename a picture about to be redrawn to <name>.before-redraw[-N].png and return the new path."""
+    n, aside = 1, path.with_name(f"{path.stem}.before-redraw{path.suffix}")
+    while aside.exists():
+        n += 1
+        aside = path.with_name(f"{path.stem}.before-redraw-{n}{path.suffix}")
+    path.replace(aside)
+    return aside
 
 
 def _retry(fn, attempts: int = 3, wait: float = 4.0, give_up=lambda exc: False):
@@ -312,34 +328,44 @@ def generate_assets(
         return call()
     todo: dict[Path, Shot] = {}
     for s in shots:
-        if s.image and not s.image.exists():
+        if s.to_draw:
             todo.setdefault(s.image, s)
     pending = list(todo.values())
     total = len(pending)  # taken now: the style anchors are popped off `pending` below
     base_refs = list(cfg.illustrate.reference_images) + list(cfg.style.reference_images)
     guard = content_guard(cfg)
 
-    def draw(s: Shot, refs: list[Path]) -> None:
+    def draw(s: Shot, refs: list[Path]) -> bool:
         prompt = image_prompt(style, s.beat.scene, guard)
         try:
             data = _retry(lambda: paid(image_usd, lambda: provider.generate(prompt, "16:9", refs[-3:])), give_up=over_allowance)
             s.image.parent.mkdir(parents=True, exist_ok=True)
-            s.image.write_bytes(data)
+            if s.image.exists():  # a redraw: keep the old picture beside the new one, never lose it
+                fresh = s.image.with_name(s.image.stem + ".new" + s.image.suffix)
+                fresh.write_bytes(data)
+                keep_aside(s.image)
+                fresh.replace(s.image)
+            else:
+                s.image.write_bytes(data)
             ledger.add(image_usd, images=1)
             with lock:
                 report.images_made += 1
             log.info("Picture %d/%d done", report.images_made, total)
+            return True
         except Exception as exc:
-            log.warning("Picture for shot %d failed (%s); the previous picture will be held", s.index + 1, exc)
+            held = "the current picture is kept" if s.image.exists() else "the previous picture will be held"
+            log.warning("Picture for shot %d failed (%s); %s", s.index + 1, exc, held)
             with lock:
                 report.image_failures.append(s.index)
+            return False
 
-    # The first two pictures are drawn one after the other and become the style anchors for all the rest.
-    anchors: list[Path] = [s.image for s in shots if s.image and s.image.exists()][:2]
+    # The first two pictures are drawn one after the other and become the style anchors for all the rest. A picture
+    # being redrawn is never an anchor: it would steer its replacement back toward itself.
+    redrawn = {s.image for s in pending}
+    anchors: list[Path] = [s.image for s in shots if s.image and s.image.exists() and s.image not in redrawn][:2]
     while pending and len(anchors) < 2:
         s = pending.pop(0)
-        draw(s, base_refs + anchors)
-        if s.image.exists():
+        if draw(s, base_refs + anchors):
             anchors.append(s.image)
     if pending:
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:

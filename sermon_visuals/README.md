@@ -213,7 +213,12 @@ clip. Send that image to Claude to get specific feedback and changes.
 
 Useful switches: `--draft` (free placeholder pictures, to judge pacing before paying for art),
 `--preview` (half-size, faster), `--plan-only` (storyboard and estimate, no spend), `--start 12`
-(begin at minute 12), `--replan` (new storyboard).
+(begin at minute 12), `--replan` (new storyboard), `--redraw 5,17` (draw beats 5 and 17 again; priced
+and asked first, and the old pictures are kept beside the new ones as `...before-redraw.png`).
+
+With `style = "ink"`, each run ends its picture step with a short **picture check**: beats whose
+picture has heavy grey shading, edges that are not clean paper, or orange that may read as a halo,
+each with the reason. It is a warning only; use `--redraw` on the ones you agree with.
 
 Taste lives in three settings under `[studio]` in `config.toml`: `style` (graphic, ink, woodcut,
 painterly, or your own sentence), `direction` (plain-English director's notes the storyboard must

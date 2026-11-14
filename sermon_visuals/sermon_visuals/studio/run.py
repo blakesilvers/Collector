@@ -8,12 +8,14 @@ import subprocess
 from dataclasses import asdict
 from pathlib import Path
 
+from PIL import Image
+
 from .. import attribution, compose, verses
 from ..config import Config
 from ..imagegen import ImageProvider, content_guard, make_provider
 from ..transcribe import edited_transcript, find_audio, get_transcript
-from . import assets, plan, render
-from .levels import LEVEL_BLURBS, STYLES, layers_for
+from . import assets, ink, plan, render
+from .levels import LEVEL_BLURBS, STYLES, is_whiteboard, layers_for
 
 log = logging.getLogger(__name__)
 
@@ -102,7 +104,7 @@ def report_key_phrases(board: plan.Storyboard, words: list[plan.Word], sentences
 def report_writing_risk(shots: list[assets.Shot]) -> None:
     """Warn (never block) about scenes still to be drawn that mention things which often come out with
     garbled writing on them."""
-    risky = [(s.index + 1, words) for s in shots if s.image and not s.image.exists()
+    risky = [(s.index + 1, words) for s in shots if s.to_draw
              for words in [plan.lint_scene(s.beat.scene)] if words]
     if not risky:
         return
@@ -115,7 +117,7 @@ def report_writing_risk(shots: list[assets.Shot]) -> None:
 def report_style_risk(shots: list[assets.Shot], style: str) -> None:
     """For the whiteboard (ink) style: warn (never block) about scenes still to be drawn that use camera, time-of-day,
     lighting or colour words, or anything that can read as a halo."""
-    risky = [(s.index + 1, words) for s in shots if s.image and not s.image.exists()
+    risky = [(s.index + 1, words) for s in shots if s.to_draw
              for words in [plan.lint_style(s.beat.scene, style)] if words]
     if not risky:
         return
@@ -124,6 +126,53 @@ def report_style_risk(shots: list[assets.Shot], style: str) -> None:
           "file and run again (only that picture is redrawn):")
     for beat, words in risky:
         print(f"    Beat {beat}: {', '.join(words)}")
+
+
+def mark_redraw(shots: list[assets.Shot], n_beats: int, redraw: list[int] | None) -> list[int]:
+    """Mark the beats the owner asked to have drawn again (numbered from 1, as the warnings print them). Raises
+    ValueError, before anything is spent, for a beat that does not exist or has no picture of its own."""
+    if not redraw:
+        return []
+    beats = sorted(set(redraw))
+    bad = [n for n in beats if not 1 <= n <= n_beats]
+    if bad:
+        raise ValueError(f"There is no beat {', '.join(map(str, bad))} to redraw: this storyboard has {n_beats} beats, "
+                         f"numbered 1 to {n_beats}. Nothing was drawn or spent.")
+    by_index = {s.index: s for s in shots}
+    missing = [n for n in beats if n - 1 not in by_index]
+    if missing:
+        raise ValueError(f"Beat {', '.join(map(str, missing))} takes up no time on screen, so it has no picture to redraw. "
+                         "Nothing was drawn or spent.")
+    for n in beats:
+        by_index[n - 1].redraw = True
+    return beats
+
+
+def report_picture_check(shots: list[assets.Shot], image_usd: float) -> None:
+    """Ink style: measure each picture as it will be shown (after the clean-up) and list, in plain words, the ones
+    that may be worth redrawing. A warning only; the video is still made with them."""
+    reasons: dict[Path, list[str]] = {}
+    flagged: list[tuple[int, list[str]]] = []
+    for s in shots:
+        if not s.image or not s.image.exists():
+            continue
+        if s.image not in reasons:
+            with Image.open(s.image) as im:
+                small = im.convert("RGB")
+            small.thumbnail((1376, 1376))
+            reasons[s.image] = ink.qc(ink.normalize(small)).reasons()
+        if reasons[s.image]:
+            flagged.append((s.index + 1, reasons[s.image]))
+    if not flagged:
+        print("  Picture check (ink style): nothing to flag.")
+        return
+    print("  Picture check (ink style): these pictures may be worth redrawing. This is a warning only; the video "
+          "is made with them as they are.")
+    for beat, why in flagged:
+        print(f"    Beat {beat}: {'; '.join(why)}")
+    beats = ",".join(str(b) for b, _ in flagged)
+    print(f"  To redraw any of them, run the same command again with --redraw {beats} (or just the ones you choose). "
+          f"Each costs about ${image_usd:.2f}, and you are asked first.")
 
 
 def shots_from(board: plan.Storyboard, sentences: list[plan.Sentence], duration: float) -> list[assets.Shot]:
@@ -148,6 +197,7 @@ def run_studio(
     board: plan.Storyboard | None = None,
     confirm=input,
     plan_estimate: float | None = None,
+    redraw: list[int] | None = None,
 ) -> dict:
     st = cfg.studio
     level = level or st.level
@@ -236,6 +286,7 @@ def run_studio(
 
     # 3. shots, animation choice, budget
     shots = shots_from(board, sentences, length)
+    redrawing = mark_redraw(shots, len(board.beats), redraw)
     style = STYLES.get(st.style, st.style)
     guard = content_guard(cfg)
     assets.choose_animated(shots, 0.0 if draft else layers.motion_share)
@@ -264,6 +315,9 @@ def run_studio(
           f"(${st.budget_usd:.0f} per full program, pro-rated).")
     if dropped:
         print(f"  {dropped} planned animation(s) were turned back into stills to stay inside the budget.")
+    if redrawing:
+        print(f"  Redrawing beat{'s' if len(redrawing) > 1 else ''} {', '.join(map(str, redrawing))} as asked. Each current "
+              "picture is kept beside its new one, renamed ...before-redraw.png.")
     report_key_phrases(board, words, sentences, layers, spans)
     report_writing_risk(shots)
     report_style_risk(shots, st.style)
@@ -284,6 +338,8 @@ def run_studio(
         motion = assets.OmniMotion(st.motion_model, st.motion_resolution)
     report = assets.generate_assets(cfg, shots, style, provider, motion, ledger, image_usd, st.video_usd_per_second, st.workers,
                                     budget_left=budget - ledger.data["usd"])
+    if is_whiteboard(st.style) and not draft:
+        report_picture_check(shots, st.image_usd)
 
     # 5. render
     scale = 0.5 if preview else 1.0

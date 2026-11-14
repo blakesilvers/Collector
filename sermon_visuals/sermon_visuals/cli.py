@@ -102,7 +102,7 @@ def cmd_studio(args) -> int:
         return 2
     try:
         run_studio(cfg, args.stem, level=args.level, start=args.start * 60, minutes=args.minutes, assume_yes=args.yes,
-                   plan_only=args.plan_only, replan=args.replan, draft=args.draft, preview=args.preview)
+                   plan_only=args.plan_only, replan=args.replan, draft=args.draft, preview=args.preview, redraw=args.redraw)
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(f"Studio stopped: {exc}", file=sys.stderr)
         return 1
@@ -136,6 +136,17 @@ def cmd_choose(args) -> int:
     return 0
 
 
+def _beat_list(text: str) -> list[int]:
+    """"5,17" -> [5, 17]: beat numbers as the studio's warnings print them, counted from 1."""
+    try:
+        beats = [int(part) for part in text.replace(" ", "").split(",")]
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected beat numbers separated by commas, like 5,17 (got {text!r})") from None
+    if not beats or min(beats) < 1:
+        raise argparse.ArgumentTypeError(f"beat numbers start at 1 (got {text!r})")
+    return beats
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sermon-visuals", description="Artwork, quote cards and video for archived sermon audio.")
     p.add_argument("-c", "--config", default="config.toml")
@@ -162,6 +173,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--preview", action="store_true", help="half-size render, about 3x faster")
     sp.add_argument("--plan-only", action="store_true", help="make the storyboard and the cost estimate, then stop")
     sp.add_argument("--replan", action="store_true", help="discard the saved storyboard for this level and make a new one")
+    sp.add_argument("--redraw", type=_beat_list, metavar="BEATS",
+                    help="draw these beats' pictures again, e.g. --redraw 5,17 (priced and asked first; old pictures are kept)")
     sp.add_argument("--yes", action="store_true", help="skip the spend confirmation")
     sp.set_defaults(fn=cmd_studio)
     up = sub.add_parser("update", help="download the latest code from GitHub and replace it in place (keeps config, keys, programs, output)")

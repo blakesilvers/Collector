@@ -1659,3 +1659,248 @@ def test_whiteboard_lint_warns_before_the_picture_question(workspace: Path, monk
         run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), board=board, provider=FakeProvider(),
                        confirm=lambda q: seen.append(capsys.readouterr().out) or "n")
         assert ("Beat 2: wide shot, dusk, halo" in seen[0]) is expect and "Beat 1:" not in seen[0], style
+
+
+# ---------- ink clean-up and picture checks ----------
+
+def _sketchbook_photo(dark_fill: bool = True) -> Image.Image:
+    """A synthetic photo of an ink drawing in a sketchbook: warm paper with a vignette, the neighbouring page and the
+    binding on the left, a strip of wooden desk on the right, black line work, an orange accent, a blue patch, a grey
+    wash and (optionally) a large black fill."""
+    import numpy as np
+    from PIL import ImageDraw
+    W, H = 960, 540
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    vignette = 1.0 - 0.14 * (((xx - W / 2) / (W / 2)) ** 2 + ((yy - H / 2) / (H / 2)) ** 2) / 2
+    paper = np.array([238, 228, 210], np.float32)
+    img = paper[None, None, :] * vignette[..., None]
+    img[:, :14] = np.array([214, 205, 190])           # the neighbouring page
+    img[:, 14:17] = np.array([120, 112, 100])         # the binding
+    rng = np.random.default_rng(3)
+    desk = np.array([150, 92, 48], np.float32) + rng.normal(0, 10, (H, 26, 1))
+    img[:, W - 26:] = desk                            # wooden desk
+    im = Image.fromarray(img.clip(0, 255).astype(np.uint8))
+    d = ImageDraw.Draw(im)
+    for k in range(8):                                # line work
+        d.line((200 + 30 * k, 150, 200 + 30 * k, 420), fill=(20, 20, 20), width=4)
+    d.rectangle((480, 300, 620, 420), outline=(25, 25, 25), width=5)
+    d.ellipse((650, 160, 720, 230), fill=(204, 92, 32))   # orange accent
+    d.rectangle((500, 160, 600, 230), fill=(40, 70, 160))  # stray blue
+    d.rectangle((640, 330, 780, 420), fill=(150, 146, 140))  # grey wash
+    if dark_fill:
+        d.rectangle((120, 440, 420, 500), fill=(18, 18, 22))  # a deliberate black fill (a night sky, say)
+    return im
+
+
+def _patch_lum(im: Image.Image, box) -> float:
+    import numpy as np
+    a = np.asarray(im.crop(box).convert("RGB"), np.float32) / 255.0
+    return float((a @ np.array([0.2126, 0.7152, 0.0722], np.float32)).mean())
+
+
+def test_ink_normalize_cleans_the_paper_and_keeps_the_drawing(tmp_path: Path):
+    import hashlib
+
+    import numpy as np
+
+    from sermon_visuals.studio import ink
+    src = tmp_path / "pic.png"
+    _sketchbook_photo().save(src)
+    before_bytes = hashlib.sha256(src.read_bytes()).hexdigest()
+    with Image.open(src) as im:
+        raw = im.convert("RGB")
+        out = ink.normalize(im)
+    assert hashlib.sha256(src.read_bytes()).hexdigest() == before_bytes  # the cached file is never touched
+    assert out.size == raw.size and out.mode == "RGB"
+    q0, q1 = ink.qc(raw), ink.qc(out)
+    assert q0.border_lum < 0.9 and q1.border_lum >= 0.97
+    assert q0.off_palette > 0.01 and q1.off_palette < 0.005
+    # paper, the neighbouring page, the binding and the desk are white now
+    for box in [(60, 60, 160, 120), (0, 200, 12, 300), (14, 200, 17, 300), (936, 200, 960, 300), (820, 40, 900, 100)]:
+        assert _patch_lum(out, box) >= 0.97, box
+    # line work, the black fill and the grey wash keep their tone
+    assert _patch_lum(out, (201, 260, 203, 300)) < 0.15
+    assert _patch_lum(out, (140, 450, 400, 490)) < 0.12
+    assert abs(_patch_lum(out, (660, 345, 760, 405)) - _patch_lum(raw, (660, 345, 760, 405)) / 0.88) < 0.12
+    # the orange accent keeps its colour; the stray blue turns grey at about the same darkness
+    a = np.asarray(out, np.float32) / 255.0
+    hue, sat = ink._hue_sat(a[175:215, 665:705])
+    assert sat.mean() > 0.6 and 15 <= float(np.median(hue)) <= 40
+    _, sat = ink._hue_sat(a[175:215, 515:585])
+    assert sat.mean() < 0.05 and abs(_patch_lum(out, (515, 175, 585, 215)) - _patch_lum(raw, (515, 175, 585, 215))) < 0.15
+
+
+def _figure(d, cx, cy, halo: bool):
+    d.ellipse((cx - 28, cy - 28, cx + 28, cy + 28), outline=(20, 20, 20), width=4)        # head
+    d.line((cx, cy + 28, cx, cy + 120), fill=(20, 20, 20), width=4)                     # body
+    if halo:
+        d.arc((cx - 48, cy - 48, cx + 48, cy + 48), 180, 360, fill=(235, 125, 40), width=9)
+
+
+def test_ink_qc_measures_wash_colour_border_and_halos():
+    from PIL import ImageDraw
+
+    from sermon_visuals.studio import ink
+    white = Image.new("RGB", (960, 540), (255, 255, 255))
+    q = ink.qc(white)
+    assert q.grey_wash == 0 and q.off_palette == 0 and q.border_lum > 0.99 and not q.halo and q.reasons() == []
+    im = white.copy()
+    d = ImageDraw.Draw(im)
+    d.rectangle((0, 0, 479, 269), fill=(140, 140, 140))      # a quarter of the picture in grey wash
+    d.rectangle((480, 270, 959, 539), fill=(30, 60, 170))     # a quarter in blue
+    q = ink.qc(im)
+    assert abs(q.grey_wash - 0.25) < 0.02 and abs(q.off_palette - 0.25) < 0.02 and q.border_lum < 0.9
+    assert any("grey" not in r and "edges" in r for r in q.reasons())
+    # an orange ring over a head near the top is flagged; the same low in the picture, a head without one, or an
+    # orange lamp with a round handle beside it is not
+    for cy, halo, expect in ((90, True, True), (420, True, False), (90, False, False)):
+        im = white.copy()
+        _figure(ImageDraw.Draw(im), 300, cy, halo)
+        q = ink.qc(im)
+        assert q.halo is expect, (cy, halo)
+        if expect:
+            x0, y0, x1, y1 = q.halo_boxes[0]
+            assert x0 < 300 < x1 and y0 < cy and "halo" in q.reasons()[0]
+    im = white.copy()
+    d = ImageDraw.Draw(im)
+    d.ellipse((240, 70, 340, 110), fill=(200, 100, 45), outline=(20, 20, 20), width=3)   # lamp body
+    d.ellipse((338, 74, 368, 104), outline=(20, 20, 20), width=4)                         # its handle
+    d.polygon([(260, 70), (268, 40), (276, 70)], fill=(240, 150, 40))                      # flame
+    assert not ink.qc(im).halo
+
+
+def _real_ink_pictures() -> list[Path]:
+    from sermon_visuals.imagegen import content_guard
+    from sermon_visuals.studio import assets, plan
+    from sermon_visuals.studio.levels import STYLES
+    from sermon_visuals.studio.run import shots_from
+    root = HERE.parent
+    work = root / "output" / "about_christmas" / "studio" / "clip_0000_0300"
+    if not (root / "config.toml").exists() or not (work / "storyboard_L3.json").exists():
+        return []
+    cfg = load_config(root / "config.toml")
+    board = plan.Storyboard.model_validate_json((work / "storyboard_L3.json").read_text(encoding="utf-8"))
+    sents = plan.sentences_from_words(plan.load_words(work / "words.json"))
+    shots = shots_from(plan.repair(board, len(sents)), sents, 300.0)
+    assets.assign_paths(shots, work / "assets", STYLES["ink"], content_guard(cfg), cfg.studio.motion_model)
+    found = [s.image for s in shots if s.image.exists()]
+    return found if len(found) == len(shots) else []
+
+
+def test_ink_normalize_on_the_real_ink_pictures():
+    """Runs only on the machine that holds the about_christmas ink clip (21 pictures); skipped elsewhere."""
+    from sermon_visuals.studio import ink
+    pictures = _real_ink_pictures()
+    if not pictures:
+        pytest.skip("the about_christmas ink pictures are not on this computer")
+    assert len(pictures) == 21
+    for path in pictures:
+        with Image.open(path) as im:
+            small = im.convert("RGB").resize((im.width // 2, im.height // 2), Image.BOX)
+        q = ink.qc(ink.normalize(small))
+        assert q.border_lum >= 0.97 and q.off_palette < 0.005, (path.name, q)
+
+
+# ---------- redrawing chosen beats, and the picture check after generation ----------
+
+class _ColourProvider:
+    """Pictures in a new colour on every call, so a redraw is visible in the file."""
+    name, model = "fake", "fake-1"
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def generate(self, prompt: str, aspect: str, references) -> bytes:
+        import io
+        self.calls.append(prompt)
+        buf = io.BytesIO()
+        Image.new("RGB", (320, 180), (255, 255, 255 - 20 * len(self.calls))).save(buf, "PNG")
+        return buf.getvalue()
+
+
+def _two_beat_board():
+    from sermon_visuals.studio import plan as P
+    return P.Storyboard(title="T", chapters=[], readings=[], beats=[
+        P.Beat(first=0, last=1, scene="Two hands and a rolled scroll.", motion="", hero=False, key_phrase=""),
+        P.Beat(first=2, last=99, scene="A clay oil lamp beside a closed jar.", motion="", hero=False, key_phrase="")])
+
+
+def test_redraw_chosen_beats_goes_through_the_estimate_and_the_ledger(workspace: Path, monkeypatch, capsys):
+    cfg, run, calls, work = _gated_studio(workspace, monkeypatch)
+    monkeypatch.setattr(run.render, "render", lambda tl, audio, out, **k: out)
+    cfg.studio.image_usd = 0.10
+    provider = _ColourProvider()
+    run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), board=_two_beat_board(), provider=provider,
+                   confirm=lambda q: "y")
+    assert len(provider.calls) == 2
+    pictures = sorted((work / "assets").glob("img_*.png"))
+    first = {p.name: p.read_bytes() for p in pictures}
+    spent = json.loads((work / "spend.json").read_text(encoding="utf-8"))["usd"]
+
+    # declining the question changes nothing
+    asked: list[str] = []
+    run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), provider=provider, redraw=[2],
+                   confirm=lambda q: asked.append(q) or "n")
+    assert asked == ["  Spend about $0.10? [y/N] "] and len(provider.calls) == 2
+    assert {p.name: p.read_bytes() for p in (work / "assets").glob("img_*.png")} == first
+
+    # saying yes redraws only beat 2, counts it, and keeps the old picture beside the new one
+    run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), provider=provider, redraw=[2], confirm=lambda q: "y")
+    assert len(provider.calls) == 3 and "A clay oil lamp beside a closed jar." in provider.calls[-1]
+    assert json.loads((work / "spend.json").read_text(encoding="utf-8"))["usd"] == pytest.approx(spent + 0.10)
+    now = {p.name: p.read_bytes() for p in (work / "assets").glob("img_*.png")}
+    changed = [n for n in first if now[n] != first[n]]
+    assert len(changed) == 1
+    backups = list((work / "assets").glob("*.before-redraw*.png"))
+    assert len(backups) == 1 and backups[0].read_bytes() == first[changed[0]]
+    out = capsys.readouterr().out
+    assert "Redrawing beat 2" in out
+
+    # without --redraw nothing is drawn again
+    run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), provider=provider, confirm=_no_prompt)
+    assert len(provider.calls) == 3
+    with pytest.raises(ValueError) as info:
+        run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), provider=provider, redraw=[7], confirm=_no_prompt)
+    assert "7" in str(info.value) and "2 beats" in str(info.value)
+
+
+def test_redraw_option_on_the_command_line():
+    from sermon_visuals.cli import build_parser
+    args = build_parser().parse_args(["studio", "about_christmas", "--redraw", "5, 17"])
+    assert args.redraw == [5, 17]
+    assert build_parser().parse_args(["studio", "about_christmas"]).redraw is None
+    for bad in ("five", "0", "3,,x"):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["studio", "about_christmas", "--redraw", bad])
+
+
+def test_ink_picture_check_is_printed_after_generation(workspace: Path, monkeypatch, capsys):
+    import io
+
+    from PIL import ImageDraw
+    cfg, run, calls, work = _gated_studio(workspace, monkeypatch)
+    monkeypatch.setattr(run.render, "render", lambda tl, audio, out, **k: out)
+    cfg.studio.image_usd = 0.10
+
+    class Pictures:
+        name, model = "fake", "fake-1"
+
+        def generate(self, prompt, aspect, references):
+            im = Image.new("RGB", (960, 540), (255, 255, 255))
+            d = ImageDraw.Draw(im)
+            if "lamp" in prompt:  # the second beat: murky grey wash over most of the picture
+                d.rectangle((60, 40, 900, 500), fill=(130, 130, 130))
+            d.line((300, 200, 600, 300), fill=(20, 20, 20), width=5)
+            buf = io.BytesIO()
+            im.save(buf, "PNG")
+            return buf.getvalue()
+
+    for style, expect in (("ink", True), ("graphic", False)):
+        cfg.studio.style = style
+        run.run_studio(cfg, "btw-0001", level=3, words=_studio_words(), board=_two_beat_board(), provider=Pictures(),
+                       confirm=lambda q: "y")
+        out = capsys.readouterr().out
+        assert ("Picture check" in out) is expect, style
+        if expect:
+            check = out[out.index("Picture check"):]
+            assert "Beat 2: heavy grey shading" in check and "Beat 1:" not in check and "--redraw 2" in check
