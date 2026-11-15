@@ -98,6 +98,9 @@ title_seconds = 4           # the YouTube title frame shown before the first ske
 level = 3
 budget_usd = 200            # hard cap per full program; a clip gets its pro-rated share. Nothing is spent without a y/N prompt.
 style = "graphic"           # graphic | ink | woodcut | painterly, or write your own style sentence here
+# Ink style only: the hand-lettering font for key phrases and chapter titles (a font file name such as "segoeprb.ttf",
+# or a full path). Empty = Segoe Print Bold. Check a font's licence allows use in published video before switching.
+lettering_font = ""
 # Director's notes: plain-English instructions the storyboard must follow. This is the main lever for taste.
 direction = """"""
 whisper_model = "small.en"  # local word timing; "base.en" is faster, "medium.en" more exact

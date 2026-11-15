@@ -103,6 +103,7 @@ class Studio:
     budget_usd: float = 200.0
     style: str = "graphic"
     direction: str = ""
+    lettering_font: str = ""  # hand lettering in the ink style; empty = Segoe Print Bold (see studio.render.LETTERING_FONT)
     fps: int = 24
     width: int = 1920
     height: int = 1080

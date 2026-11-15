@@ -2065,12 +2065,13 @@ def test_ink_key_phrase_shows_the_vetted_words():
 
 
 def test_ink_text_waits_for_its_picture(tmp_path: Path):
-    """A key phrase or card on a new picture appears only once that picture has finished inking in."""
+    """A key phrase or card on a new picture appears only once that picture has been drawn on (for a 5 s shot:
+    0.3 s clearing, 1.75 s drawing, 0.4 s soft finish, so 2.45 s after the cut)."""
     from sermon_visuals.studio import render
     a = _golden_picture(tmp_path / "a.png", 1)
     b = _golden_picture(tmp_path / "b.png", 2)
     shots = [render.ShotSpec(0.0, 5.0, a), render.ShotSpec(5.0, 10.0, b)]
-    times = [4.9, 5.3, 5.7, 5.9]
+    times = [4.9, 5.3, 7.3, 7.6]
     for layer in ({"callouts": [_phrase(5.05)]}, {"cards": [_card(5.3, 9.0)]}):
         shown = _frames(_ink_timeline(None, tmp_path, shots=shots, **layer), times)
         bare = _frames(_ink_timeline(None, tmp_path, shots=shots), times)
@@ -2202,7 +2203,7 @@ def test_ink_text_waits_even_when_the_first_word_is_on_the_cut(tmp_path: Path):
     a = _golden_picture(tmp_path / "a.png", 1)
     b = _golden_picture(tmp_path / "b.png", 2)
     shots = [render.ShotSpec(0.0, 5.0, a), render.ShotSpec(5.0, 10.0, b)]
-    times = [4.9, 5.3, 5.9]
+    times = [4.9, 7.3, 7.6]  # the picture is drawn on by 7.45
     shown = _frames(_ink_timeline(None, tmp_path, shots=shots, callouts=[_phrase(5.0)]), times)
     bare = _frames(_ink_timeline(None, tmp_path, shots=shots), times)
     assert (shown[1] == bare[1]).all() and not (shown[2] == bare[2]).all()
@@ -2314,3 +2315,188 @@ def test_a_picture_made_again_never_keeps_an_old_clip(workspace: Path):
     shot.redraw, shot.animate = False, True
     assets.assign_paths([shot], workspace / "a", "style", imagegen.content_guard(cfg), "m")
     assert not shot.clip.exists() and assets.estimate([shot], 0.1, 0.07, 0.0).new_clip_seconds == 5
+
+
+# ---------- the drawn build of ink pictures ----------
+
+def _ink_drawing(path: Path, objects: int = 3, W: int = 1075, H: int = 605) -> Path:
+    """A small synthetic ink drawing on white paper: separate objects (black outline, grey wash, hatching, one
+    orange patch), or with objects=1 one big subject that fills the sheet."""
+    from PIL import ImageDraw
+    im = Image.new("RGB", (W, H), (255, 255, 255))
+    d = ImageDraw.Draw(im)
+    if objects == 1:
+        d.ellipse((60, 40, W - 60, H - 40), fill=(150, 150, 150), outline=(20, 20, 20), width=8)
+        for k in range(100, W - 100, 22):
+            d.line((k, 80, k - 40, H - 80), fill=(40, 40, 40), width=3)
+    else:
+        for j in range(objects):
+            cx, cy, r = (0.18 + 0.64 * j / max(objects - 1, 1)) * W, H * (0.5 + 0.08 * (-1) ** j), W * 0.09
+            d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(160, 160, 160), outline=(20, 20, 20), width=7)
+            d.rectangle((cx - r * 0.4, cy - r * 0.3, cx + r * 0.2, cy + r * 0.1), fill=(225, 120, 40))
+            for k in range(-int(r) + 10, int(r) - 10, 14):
+                d.line((cx + k, cy - r * 0.6, cx + k - 12, cy + r * 0.6), fill=(30, 30, 30), width=3)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    im.save(path)
+    return path
+
+
+def _drawn_timeline(tmp: Path, *, entrance: str = "", verses: bool = False, theme=None):
+    from sermon_visuals.studio import render
+    from sermon_visuals.studio.theme import INK
+    from sermon_visuals.verses import PAPER_BAND, Scripture, build_overlays
+    a = _ink_drawing(tmp / "one.png", objects=1)
+    b = _ink_drawing(tmp / "three.png", objects=3)
+    ovs = build_overlays([Scripture(start=6.0, end=9.0, reference="Luke 1:1", version="KJV", text="Forasmuch as many have taken in hand.")],
+                         tmp / "verses", 960, 540, compose.Fonts.resolve(), band=PAPER_BAND) if verses else []
+    return render.Timeline(duration=12.0, shots=[render.ShotSpec(0.0, 4.0, a), render.ShotSpec(4.0, 12.0, b, entrance=entrance,
+                                                                                              onsets=(0.4, 1.3, 2.2))],
+                           verses=ovs, theme=theme or INK, progress=False)
+
+
+def test_drawn_build_falls_back_to_the_whole_picture_when_the_split_is_poor(tmp_path: Path):
+    import numpy as np
+
+    from sermon_visuals.studio import drawon
+    three = drawon.analyse(np.asarray(Image.open(_ink_drawing(tmp_path / "3.png", 3)).convert("RGB")), strokes=False)
+    assert not three.whole and len(three.objects) >= 2
+    one = drawon.analyse(np.asarray(Image.open(_ink_drawing(tmp_path / "1.png", 1)).convert("RGB")), strokes=False)
+    assert one.whole and len(one.items) == 1 and one.reason
+    # two items meeting along a long inked border read as one object cut in two
+    lab = np.zeros((20, 20), np.int32)
+    lab[:, :10], lab[:, 10:] = 1, 2
+    items = [drawon.Item(label=k, area=1000, cx=0, cy=0, bbox=(0, 0, 1, 1), ink_bbox=(0, 0, 1, 1)) for k in (1, 2)]
+    cut = drawon.Split(items=items, label=lab, dist=np.zeros((20, 20)), coarse=lab, ink_density=np.full((20, 20), 0.5))
+    ok, reason = drawon.judge_split(cut)
+    assert not ok and "cut in two" in reason
+    apart = lab.copy()
+    apart[:, 9:11] = 0  # the same two items with a strip of bare paper between them
+    ok, _ = drawon.judge_split(drawon.Split(items=items, label=apart, dist=np.zeros((20, 20)), coarse=apart,
+                                            ink_density=np.where(apart > 0, 0.5, 0.0)))
+    assert ok
+
+
+def test_drawn_build_without_the_optional_packages_uses_the_ink_flow_and_says_so(tmp_path: Path, monkeypatch, capsys):
+    import builtins
+
+    import numpy as np
+
+    from sermon_visuals.studio import drawon, render, run
+    real = builtins.__import__
+
+    def no_strokes(name, *a, **k):
+        if name.split(".")[0] in ("cv2", "skimage"):
+            raise ImportError(f"No module named {name!r}")
+        return real(name, *a, **k)
+    monkeypatch.setattr(builtins, "__import__", no_strokes)
+    monkeypatch.setattr(drawon, "_STROKES_OK", None)
+    assert drawon.strokes_available() is False
+    r = render.Renderer(_drawn_timeline(tmp_path), 960, 540, 24)
+    frames = [r.frame(t) for t in (3.9, 4.6, 5.5, 7.0)]  # no crash: the picture is drawn on with the ink flow
+    assert r._build is not None and r._build.a.strokes is False
+    assert not np.array_equal(frames[1], frames[3])
+    r.close()
+    run.report_drawn_build(_drawn_timeline(tmp_path), [])
+    out = capsys.readouterr().out
+    assert "opencv-python-headless and scikit-image" in out and 'pip install -e ".[strokes]"' in out
+
+
+def test_drawn_build_ends_on_the_normalised_picture(tmp_path: Path):
+    """Stepping through the build frame by frame leaves nothing undrawn: once every item is finished the canvas is
+    the cleaned-up picture itself, pixel for pixel, and so is everything the camera shows afterwards."""
+    import numpy as np
+
+    from sermon_visuals.compose import cover
+    from sermon_visuals.studio import ink, render
+    from sermon_visuals.studio.theme import INK
+    pic = INK_FIXTURES[2]
+    tl = render.Timeline(duration=12.0, shots=[render.ShotSpec(0.0, 4.0, INK_FIXTURES[0]), render.ShotSpec(4.0, 12.0, pic)],
+                         theme=INK, progress=False)
+    r = render.Renderer(tl, 960, 540, 24)
+    r.frame(3.95)
+    r.frame(4.0)
+    b = r._build
+    with Image.open(pic) as im:
+        normalised = cover(ink.normalize(im.convert("RGB")), round(960 * 1.12), round(540 * 1.12))
+    assert np.array_equal(np.asarray(b.image(b.end)), np.asarray(normalised))
+    finished = max(e.t1 for e in b.entrances)
+    assert finished <= b.end + 1e-6
+    S, P = np.asarray(normalised).astype(int), np.asarray(b._P).astype(int)
+    early = np.abs(np.asarray(b.image(0.02)).astype(int) - P).max(-1)
+    assert (early > 24).mean() < 0.01  # the drawing has barely started: blank paper
+    t, k = 0.0, 0
+    while t < finished:
+        t = k / 24
+        img = np.asarray(b.image(t)).astype(int)
+        if k == 12:
+            mid = (np.abs(img - S).max(-1) > 24).mean()
+            assert 0.001 < mid  # half a second in, some of the drawing is still to come
+        k += 1
+    assert np.array_equal(np.asarray(b.canvas), np.asarray(normalised))
+    late = r.frame(4.0 + 0.3 + b.end + 0.5)
+    assert np.array_equal(late, r._camera(1, 0.5 / (8.0 - 0.3 - b.end)))
+    r.close()
+
+
+def test_puffs_never_come_during_a_reading_and_stay_rare(tmp_path: Path):
+    from sermon_visuals.studio import drawon, render
+    jars = "Three clay jars and a basket of figs on a plain table."
+    assert drawon.may_puff(drawon.BeatFacts(scene=jars))
+    for facts in (drawon.BeatFacts(scene=jars, reading=True), drawon.BeatFacts(scene=jars, chapter=True),
+                  drawon.BeatFacts(scene="A man holding three clay jars."), drawon.BeatFacts(scene="Two scrolls beside a Bible."),
+                  drawon.BeatFacts(scene="Three stones at the empty tomb."), drawon.BeatFacts(scene=jars, spoken="They wept for the dead."),
+                  drawon.BeatFacts(scene="Luke sets three scrolls on a table."), drawon.BeatFacts(scene="A wide empty hillside.")):
+        assert not drawon.may_puff(facts), facts
+    # the cap: at most one shot in four, never two within four shots of each other, never the opening picture
+    for n in (3, 4, 9, 41):
+        chosen = sorted(drawon.choose_puffs([drawon.BeatFacts(scene=jars) for _ in range(n)]))
+        assert len(chosen) <= n // 4 and 0 not in chosen
+        assert all(b - a >= 4 for a, b in zip(chosen, chosen[1:]))
+    facts = [drawon.BeatFacts(scene=jars, reading=k % 2 == 1) for k in range(40)]
+    assert not any(facts[k].reading for k in drawon.choose_puffs(facts))
+    # and the renderer refuses a puff on a shot that has a reading, whatever the plan says
+    for verses, expected in ((False, True), (True, False)):
+        r = render.Renderer(_drawn_timeline(tmp_path / str(verses), entrance="puff", verses=verses), 960, 540, 24)
+        r.frame(3.9)
+        r.frame(4.1)
+        assert r._build is not None and r._build.puff is expected, verses
+        assert all(e.kind == ("puff" if expected else "draw") for e in r._build.entrances if not e.item.setting)
+        r.close()
+
+
+def test_drawn_build_is_only_for_the_ink_style(tmp_path: Path):
+    from sermon_visuals.studio import render
+    from sermon_visuals.studio.theme import DARK
+    r = render.Renderer(_drawn_timeline(tmp_path, theme=DARK), 960, 540, 24)
+    for t in (0.5, 3.9, 4.2, 4.6, 8.0):
+        r.frame(t)
+        assert r._build is None
+    r.close()
+
+
+def test_drawn_build_is_deterministic_and_cached(tmp_path: Path):
+    import numpy as np
+
+    from sermon_visuals.studio import drawon, render
+    times = [3.9, 4.1, 4.5, 4.9, 5.6, 6.4, 9.0]
+    runs = []
+    for k in range(2):
+        tl = _drawn_timeline(tmp_path, entrance="puff")
+        tl.drawon_cache = tmp_path / f"cache{k}"
+        r = render.Renderer(tl, 960, 540, 24)
+        runs.append([r.frame(t) for t in times])
+        assert r._build.puff
+        r.close()
+    assert all(np.array_equal(a, b) for a, b in zip(*runs))
+    cached = sorted((tmp_path / "cache0").glob("*.npz"))
+    assert len(cached) == 1  # one picture was drawn on (the opening picture is not)
+    S = np.asarray(r._src)
+    fresh, again = drawon.analyse(S), drawon.analyse(S, tmp_path / "cache0")
+    for name in ("paper_small", "cls", "label", "order"):
+        assert np.array_equal(getattr(fresh, name), getattr(again, name)), name
+    assert fresh.items == again.items and fresh.whole == again.whole
+    # a cached analysis is reused, not worked out again
+    import os
+    stamp = os.stat(cached[0]).st_mtime_ns
+    drawon.analyse(S, tmp_path / "cache0")
+    assert os.stat(cached[0]).st_mtime_ns == stamp

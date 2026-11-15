@@ -14,7 +14,7 @@ from .. import attribution, compose, verses
 from ..config import Config
 from ..imagegen import ImageProvider, content_guard, make_provider
 from ..transcribe import edited_transcript, find_audio, get_transcript
-from . import assets, ink, plan, render
+from . import assets, drawon, ink, plan, render
 from .levels import LEVEL_BLURBS, STYLES, is_whiteboard, layers_for
 from .theme import theme_for
 
@@ -34,10 +34,12 @@ def studio_dir(cfg: Config, stem: str, start: float, minutes: float | None) -> P
 
 def build_timeline(board: plan.Storyboard, words: list[plan.Word], sentences: list[plan.Sentence], duration: float,
                    shots: list[assets.Shot], layers, overlay_dir: Path, W: int, H: int, max_words: int, min_page_seconds: float,
-                   *, spans: list[attribution.Span] | None, style: str = "") -> render.Timeline:
+                   *, spans: list[attribution.Span] | None, style: str = "", drawon_cache: Path | None = None,
+                   lettering_font: str = "") -> render.Timeline:
     """`spans` is the reference transcript split by attribution.split_transcript, or None when there is none
     (then key phrases are checked against the audio only). `style` is the [studio] style name; it chooses how the
-    text layers look (theme.theme_for), never which words are shown or when."""
+    text layers look (theme.theme_for), never which words are shown or when. For the whiteboard styles it also
+    chooses the few pictures that puff in instead of being drawn on (drawon.choose_puffs)."""
     theme = theme_for(style)
     starts = {s.beat.first: s.start for s in shots}
     # scripture readings -> overlay pages
@@ -74,13 +76,21 @@ def build_timeline(board: plan.Storyboard, words: list[plan.Word], sentences: li
             end = min(shot.end - 0.05, max(timed[-1][1] + 2.4, timed[0][1] + 3.0))
             callouts.append(render.Callout(words=timed, end=end))
     chapters = [render.ChapterMark(number=k + 1, title=c.title, start=starts.get(c.first, 0.0)) for k, c in enumerate(board.chapters)]
+    drawn = theme.drawn and layers.ink_in
+    puffs = drawon.choose_puffs([drawon.BeatFacts(
+        scene=s.beat.scene, spoken=" ".join(sentences[k].text for k in range(s.beat.first, s.beat.last + 1)),
+        reading=any(sc.start < s.end and sc.end > s.start for sc in scriptures),
+        chapter=any(s.beat.first <= c.first <= s.beat.last for c in board.chapters)) for s in shots]) if drawn else set()
     return render.Timeline(
         duration=duration,
-        shots=[render.ShotSpec(start=s.start, end=s.end, image=s.image, clip=s.clip if s.animate else None, clip_seconds=s.clip_seconds) for s in shots],
+        shots=[render.ShotSpec(start=s.start, end=s.end, image=s.image, clip=s.clip if s.animate else None, clip_seconds=s.clip_seconds,
+                               entrance="puff" if k in puffs else "",
+                               onsets=tuple(drawon.phrase_onsets(words, s.start, s.end)) if drawn else ())
+               for k, s in enumerate(shots)],
         callouts=callouts, cards=cards, chapters=chapters, verses=overlays,
         caption_words=words if layers.captions else [],
         progress=layers.progress, ink_in=layers.ink_in, camera=layers.camera, show_chapters=layers.chapters,
-        theme=theme,
+        theme=theme, drawon_cache=drawon_cache if drawn else None, lettering_font=lettering_font,
     )
 
 
@@ -181,6 +191,17 @@ def report_picture_check(shots: list[assets.Shot], image_usd: float) -> None:
     beats = ",".join(str(b) for b, _ in flagged)
     print(f"  To redraw any of them, run the same command again with --redraw {beats} (or just the ones you choose). "
           f"Each costs about ${image_usd:.2f}, and you are asked first.")
+
+
+def report_drawn_build(tl: render.Timeline, shots: list[assets.Shot]) -> None:
+    """Whiteboard styles: say how the pictures will come in, and when the nicer pen-stroke order is unavailable."""
+    if not (tl.theme.drawn and tl.ink_in):
+        return
+    puffs = [shots[k].index + 1 for k, s in enumerate(tl.shots) if s.entrance == "puff"]
+    print("  Pictures are drawn on, item by item" + (f"; beat{'s' if len(puffs) > 1 else ''} {', '.join(map(str, puffs))} "
+                                                     "puff in instead (if the picture splits cleanly)." if puffs else "."))
+    if not drawon.strokes_available():
+        print(f"  {drawon.STROKES_NOTE}")
 
 
 def shots_from(board: plan.Storyboard, sentences: list[plan.Sentence], duration: float) -> list[assets.Shot]:
@@ -353,7 +374,9 @@ def run_studio(
     scale = 0.5 if preview else 1.0
     W, H = int(st.width * scale) // 2 * 2, int(st.height * scale) // 2 * 2
     tl = build_timeline(board, words, sentences, length, shots, layers, work / f"verse_overlays_{W}", W, H,
-                        cfg.verses.max_words, cfg.verses.min_page_seconds, spans=spans, style=st.style)
+                        cfg.verses.max_words, cfg.verses.min_page_seconds, spans=spans, style=st.style,
+                        drawon_cache=assets_dir / "drawon", lettering_font=st.lettering_font)
+    report_drawn_build(tl, shots)
     name = f"{stem}_L{level}{'_draft' if draft else ''}{'_preview' if preview else ''}"
     out = work / f"{name}.mp4"
     sheet = work / f"{name}_contact_sheet.jpg"

@@ -220,6 +220,21 @@ With `style = "ink"`, each run ends its picture step with a short **picture chec
 picture has heavy grey shading, edges that are not clean paper, or orange that may read as a halo,
 each with the reason. It is a warning only; use `--redraw` on the ones you agree with.
 
+With `style = "ink"`, each new picture is **drawn on** rather than dissolved in: the page clears, then
+the picture is built item by item (lines, then grey wash, then orange) before the camera starts to
+move; key phrases and cards wait until it is finished. A few pictures of plain countable objects (at
+most about one shot in four, never during a reading, never with people in them) puff in instead. No
+drawing hand is ever shown. For pen-stroke order rather than the simpler ink flow, install the optional
+extra once (the run works without it and says so):
+
+```bash
+pip install -e ".[strokes]"
+```
+
+The drawing analysis is cached beside the pictures (`assets/drawon/`), so a second render is quick.
+The lettering font for the ink style is one setting, `lettering_font` under `[studio]` (empty means
+Segoe Print Bold).
+
 Taste lives in three settings under `[studio]` in `config.toml`: `style` (graphic, ink, woodcut,
 painterly, or your own sentence), `direction` (plain-English director's notes the storyboard must
 follow, e.g. "more maps and journeys, fewer interiors; show contrasts side by side"), and

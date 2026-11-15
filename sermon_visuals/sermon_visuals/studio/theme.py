@@ -20,6 +20,7 @@ class Theme:
     paper: bool = False               # draw the text layers for light paper
     clean_pictures: bool = False      # run each picture through studio.ink.normalize when it is loaded
     text_waits_for_picture: bool = False  # key phrases and cards appear only once their picture is fully drawn
+    drawn: bool = False               # new pictures are drawn on, item by item (studio.drawon), when ink_in is on
     band: Band = DARK_BAND
     ink: tuple[int, int, int] = (32, 32, 32)          # charcoal: type and rules (paper themes)
     accent: tuple[int, int, int] = (180, 80, 30)      # deep orange, above 4.5:1 on white (paper themes)
@@ -29,7 +30,7 @@ class Theme:
 
 
 DARK = Theme()
-INK = Theme(name="ink", paper=True, clean_pictures=True, text_waits_for_picture=True, band=PAPER_BAND)
+INK = Theme(name="ink", paper=True, clean_pictures=True, text_waits_for_picture=True, drawn=True, band=PAPER_BAND)
 
 
 def theme_for(style: str) -> Theme:

@@ -14,7 +14,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from ..compose import SANS_CANDIDATES, SERIF_CANDIDATES, cover, wrap
 from ..verses import Overlay
-from . import ink
+from . import drawon, ink
 from .plan import Card, Word
 from .theme import DARK as DARK_THEME, Theme
 
@@ -30,8 +30,19 @@ DISPLAY_CANDIDATES = [
     "/System/Library/Fonts/Supplemental/Arial Black.ttf", "/Library/Fonts/Arial Black.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
 ]
-# A legible hand-lettered face for the ink theme's key phrases and chapter titles; the display face if it is missing.
+# The hand-lettered face for the ink theme's key phrases and chapter titles. One setting changes it: [studio]
+# lettering_font in config.toml (a font file name looked up in the usual font folders, or a full path). Left empty,
+# it is Segoe Print Bold; if the chosen font is missing, Segoe Print Bold, then the display face, stands in.
+LETTERING_FONT = "segoeprb.ttf"
+FONT_DIRS = ["C:/Windows/Fonts", str(Path.home() / "AppData/Local/Microsoft/Windows/Fonts"), "/Library/Fonts",
+             "/System/Library/Fonts/Supplemental", str(Path.home() / "Library/Fonts"), str(Path.home() / ".fonts"),
+             "/usr/share/fonts/truetype", "/usr/local/share/fonts"]
 HAND_CANDIDATES = ["C:/Windows/Fonts/segoeprb.ttf", "/Library/Fonts/Segoe Print Bold.ttf"]
+
+
+def lettering_candidates(name: str = "") -> list[str]:
+    p = Path(name or LETTERING_FONT)
+    return [str(p)] if p.is_absolute() else [str(Path(d) / p) for d in FONT_DIRS]
 SANS_BOLD_CANDIDATES = [
     "C:/Windows/Fonts/arialbd.ttf", "C:/Windows/Fonts/segoeuib.ttf",
     "/System/Library/Fonts/Supplemental/Arial Bold.ttf", "/Library/Fonts/Arial Bold.ttf",
@@ -47,12 +58,15 @@ def _first(cands: list[str], fallback: list[str]) -> str:
 
 
 class Type:
-    def __init__(self):
+    def __init__(self, lettering: str = ""):
         self.display = _first(DISPLAY_CANDIDATES, SANS_CANDIDATES)
         self.bold = _first(SANS_BOLD_CANDIDATES, SANS_CANDIDATES)
         self.sans = _first(SANS_CANDIDATES, [])
         self.serif = _first(SERIF_CANDIDATES, SANS_CANDIDATES)
-        self.hand = _first(HAND_CANDIDATES, [self.display])
+        chosen = lettering_candidates(lettering)
+        if lettering and not any(Path(c).exists() for c in chosen):
+            log.warning("The lettering font %r was not found; using Segoe Print Bold or the display face instead.", lettering)
+        self.hand = _first(chosen + HAND_CANDIDATES, [self.display])
         self._cache: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
 
     def get(self, which: str, size: int) -> ImageFont.FreeTypeFont:
@@ -71,6 +85,8 @@ class ShotSpec:
     image: Path
     clip: Path | None = None
     clip_seconds: float = 0.0
+    entrance: str = ""                     # whiteboard styles: "puff" for the few pictures chosen to puff in
+    onsets: tuple[float, ...] = ()         # shot-local phrase starts, so puffs land on the speech
 
 
 @dataclass
@@ -108,6 +124,8 @@ class Timeline:
     camera: float = 0.1
     show_chapters: bool = True
     theme: Theme = DARK_THEME
+    drawon_cache: Path | None = None       # where the drawn build keeps its per-picture analysis (None: not kept)
+    lettering_font: str = ""               # [studio] lettering_font; empty = Segoe Print Bold
 
 
 # ---------- small helpers ----------
@@ -227,12 +245,14 @@ class Renderer:
     def __init__(self, tl: Timeline, W: int = 1920, H: int = 1080, fps: int = 24):
         self.tl, self.W, self.H, self.fps = tl, W, H, fps
         self.theme = tl.theme
-        self.type = Type()
+        self.type = Type(tl.lettering_font)
         self.margin = round(W * 0.05)
         self._shot_i = -1
         self._src: Image.Image | None = None
         self._clip: ClipReader | None = None
         self._order: np.ndarray | None = None
+        self._drawn = tl.theme.drawn and tl.ink_in  # whiteboard pictures are drawn on rather than inked in
+        self._build: drawon.ShotBuild | None = None
         self._prev: np.ndarray | None = None   # last frame of the previous shot, for transitions
         self._last_base: np.ndarray | None = None
         self._callout_layers: dict[int, list[tuple[np.ndarray, int, int]]] = {}
@@ -254,6 +274,7 @@ class Renderer:
         self._prev = self._last_base
         self._shot_i = i
         self._order = None
+        self._build = None
         if shot.clip and shot.clip.exists():
             stretch = min(max((shot.end - shot.start) / max(shot.clip_seconds, 0.1), 1.0), 1.5)
             self._clip = ClipReader(shot.clip, self.W, self.H, self.fps, stretch)
@@ -265,10 +286,33 @@ class Renderer:
             if self.theme.clean_pictures:  # ink: a drawing on clean white paper (the file on disk is not touched)
                 picture = ink.normalize(picture)
             self._src = cover(picture, round(self.W * slack), round(self.H * slack))
+            if self._drawn and self._prev is not None:  # the opening picture is there from the first frame
+                self._build = self._make_build(i, shot)
 
-    def _camera(self, i: int, u: float) -> np.ndarray:
+    def _make_build(self, i: int, shot: ShotSpec) -> drawon.ShotBuild | None:
+        """The drawn build of a whiteboard picture; None (the picture inks in instead) if it cannot be prepared."""
+        S = np.asarray(self._src)
+        try:
+            analysis = drawon.analyse(S, self.tl.drawon_cache)
+        except Exception as exc:
+            log.warning("Picture %d could not be prepared for drawing on (%s); it inks in instead.", i + 1, exc)
+            return None
+        # puffs never come during a scripture reading or under a chapter card, whatever the plan said
+        busy = (any(ov.start < shot.end and ov.end > shot.start for ov in self.tl.verses)
+                or any(shot.start <= c.start < shot.end for c in self.tl.chapters))
+        return drawon.ShotBuild(S, analysis, shot.end - shot.start, index=i, puff=shot.entrance == "puff" and not busy,
+                                onsets=list(shot.onsets), ink=self.theme.ink, accent=self.theme.accent)
+
+    def _build_seconds(self, i: int) -> float:
+        """Seconds from shot i's cut until its drawn build is finished (clearing, drawing and the soft finish)."""
+        if i == self._shot_i:
+            return drawon.FADE + self._build.end if self._build is not None else 0.0
+        shot = self.tl.shots[i]
+        return drawon.FADE + drawon.build_seconds(shot.end - shot.start) + drawon.TAIL
+
+    def _camera(self, i: int, u: float, src: Image.Image | None = None) -> np.ndarray:
         """One of six camera moves over a still, chosen by shot number so neighbours differ."""
-        src, c = self._src, self.tl.camera
+        src, c = (self._src if src is None else src), self.tl.camera
         SW, SH = src.size
         kind = i % 6
         z0, z1, cx0, cx1, cy0, cy1 = 1.0, 1.0 + c, 0.5, 0.5, 0.5, 0.5          # 0: push in
@@ -314,6 +358,19 @@ class Renderer:
             self._open_shot(i)
         shot = shots[i]
         local = t - shot.start
+        if self._build is not None:  # whiteboard: clear to blank paper, draw the picture on, then the camera moves
+            b, fade = self._build, drawon.FADE
+            done = fade + b.end
+            if local < done:
+                cur = self._camera(i, 0.0, b.image(local - fade))
+                self._last_base = cur
+                if local < fade and self._prev is not None:
+                    a = ease(local / fade)
+                    return (self._prev.astype(np.float32) * (1 - a) + cur.astype(np.float32) * a).astype(np.uint8)
+                return cur.copy()
+            cur = self._camera(i, (local - done) / max(shot.end - shot.start - done, 1e-6))
+            self._last_base = cur
+            return cur.copy()
         if self._clip:
             cur = self._clip.read()
             if cur is None:
@@ -597,8 +654,21 @@ class Renderer:
             return t0
         shot = shots[i]
         animated = bool(shot.clip and shot.clip.exists())
-        settle = INK_IN_SECONDS if self.tl.ink_in and not animated else CROSSFADE_SECONDS
+        if self._drawn and not animated:
+            settle = self._build_seconds(i)
+        else:
+            settle = INK_IN_SECONDS if self.tl.ink_in and not animated else CROSSFADE_SECONDS
         return max(t0, shot.start + settle)
+
+    def _phrase_end(self, c: Callout, start: float) -> float:
+        """A key phrase that had to wait for its picture to be drawn keeps the time on screen it was planned to
+        have, as far as its picture's shot allows."""
+        due = c.words[0][1] - 0.05
+        if not self._drawn or start <= due:
+            return c.end
+        shots = self.tl.shots
+        i = max((k for k, s in enumerate(shots) if s.start <= c.words[0][1]), default=0)
+        return max(c.end, min(start + (c.end - due), shots[i].end - 0.05))
 
     def _place(self, frame: np.ndarray, w: int, h: int) -> tuple[int, int]:
         """The emptiest of three places for a block of text (upper left, upper right, lower left), judged by how
@@ -681,12 +751,13 @@ class Renderer:
             if not c.words:
                 continue
             start = self._text_start(c.words[0][1] - 0.05, at=c.words[0][1])  # the first word's picture
-            if t < start or t > c.end:
+            end = self._phrase_end(c, start)
+            if t < start or t > end:
                 continue
             if k not in self._callout_layers:
                 self._callout_layers = {k: self._paper_callout(k, frame)}  # keep only the active one
             co = self._callout_layers[k]
-            op = min(1.0, (t - start) / 0.2, (c.end - t) / 0.3)
+            op = min(1.0, (t - start) / 0.2, (end - t) / 0.3)
             blend(frame, co["layer"], co["x"], co["y"], op)
             # the underline runs under each word as it is spoken (and catches up at once if the words came first)
             reach: list[float | None] = [None] * len(co["runs"])
