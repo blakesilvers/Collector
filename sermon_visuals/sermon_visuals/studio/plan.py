@@ -1,0 +1,555 @@
+"""Word timings (local Whisper) and the storyboard (Claude). Every time on screen is derived from
+the audio's own word timestamps, so pictures and words land where the speaker actually says them."""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import subprocess
+from pathlib import Path
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+from .. import attribution
+from ..config import Config
+from .levels import STYLES, Layers, is_whiteboard
+
+log = logging.getLogger(__name__)
+
+
+# ---------- word timings ----------
+
+class Word(BaseModel):
+    w: str
+    s: float
+    e: float
+
+
+class Sentence(BaseModel):
+    id: int
+    first: int  # index of first word
+    last: int   # index of last word (inclusive)
+    s: float
+    e: float
+    text: str
+
+
+def cut_audio(audio: Path, out: Path, start: float, duration: float | None) -> Path:
+    """Mono 16 kHz WAV of the requested stretch, for the aligner."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start:.3f}"]
+    if duration:
+        cmd += ["-t", f"{duration:.3f}"]
+    cmd += ["-i", str(audio), "-ac", "1", "-ar", "16000", str(out)]
+    subprocess.run(cmd, check=True)
+    return out
+
+
+def align_words(wav: Path, model_name: str = "small.en") -> list[Word]:
+    """Word-level timestamps from faster-whisper, running locally (no API cost)."""
+    from faster_whisper import WhisperModel
+
+    log.info("Listening for word timings with Whisper %s (first run downloads the model)", model_name)
+    import wave
+
+    import numpy as np
+
+    # Decode the WAV ourselves (it is already 16 kHz mono) so no particular PyAV version is needed.
+    with wave.open(str(wav), "rb") as f:
+        if f.getframerate() != 16000 or f.getnchannels() != 1 or f.getsampwidth() != 2:
+            raise RuntimeError("expected a 16 kHz mono 16-bit WAV")
+        samples = np.frombuffer(f.readframes(f.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+    model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    segments, _ = model.transcribe(samples, word_timestamps=True, vad_filter=True, language="en")
+    words: list[Word] = []
+    for seg in segments:
+        for w in seg.words or []:
+            text = w.word.strip()
+            if text:
+                words.append(Word(w=text, s=float(w.start), e=float(w.end)))
+    if not words:
+        raise RuntimeError("Whisper heard no words in this audio.")
+    return words
+
+
+def sentences_from_words(words: list[Word], max_words: int = 28) -> list[Sentence]:
+    out: list[Sentence] = []
+    start = 0
+    for i, w in enumerate(words):
+        end_mark = w.w[-1] in ".?!" or (w.w[-1] in ",;:" and i - start + 1 >= max_words * 0.7)
+        long_pause = i + 1 < len(words) and words[i + 1].s - w.e > 0.9 and i - start + 1 >= 4
+        if end_mark or long_pause or i - start + 1 >= max_words or i == len(words) - 1:
+            out.append(Sentence(id=len(out), first=start, last=i, s=words[start].s, e=w.e,
+                                text=" ".join(x.w for x in words[start:i + 1])))
+            start = i + 1
+    return out
+
+
+def save_words(words: list[Word], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([w.model_dump() for w in words]), encoding="utf-8")
+
+
+def load_words(path: Path) -> list[Word]:
+    return [Word.model_validate(d) for d in json.loads(path.read_text(encoding="utf-8"))]
+
+
+# ---------- storyboard ----------
+
+class CardItem(BaseModel):
+    label: str = Field(description="At most 5 words.")
+    detail: str = Field(description="At most 12 words; may be empty.")
+
+
+class Card(BaseModel):
+    type: Literal["list", "timeline", "definition"]
+    title: str = Field(description="At most 5 words.")
+    items: list[CardItem] = Field(description="2 to 5 items (1 for a definition: label = the term, detail = its meaning).")
+
+
+class Beat(BaseModel):
+    first: int = Field(description="Id of the first sentence this picture covers.")
+    last: int = Field(description="Id of the last sentence this picture covers.")
+    scene: str = Field(description="What to draw: subject, action, setting, light, framing. No text or lettering in the picture.")
+    motion: str = Field(description="How this picture would move if animated for a few seconds: one subject action and one camera move.")
+    hero: bool = Field(description="True for the moments that most deserve animation: turning points, vivid action, emotional peaks.")
+    key_phrase: str = Field(description="The speaker's own most quotable 3 to 8 consecutive words from these sentences, copied exactly; empty if none stands out.")
+    card: Card | None = Field(default=None, description="Only when the speaker is listing, sequencing, dating or defining something.")
+
+
+class Chapter(BaseModel):
+    first: int = Field(description="Id of the sentence where this chapter begins.")
+    title: str = Field(description="2 to 5 words, plain and specific.")
+
+
+class Reading(BaseModel):
+    first: int
+    last: int
+    reference: str = Field(description="Book chapter:verse(s).")
+    version: str = Field(description="Translation label if the reference transcript gives one, else empty.")
+    text: str = Field(description="The passage as read, verse numbers and bracketed notes omitted; prefer the reference transcript's wording.")
+
+
+class Storyboard(BaseModel):
+    title: str
+    chapters: list[Chapter]
+    beats: list[Beat]
+    readings: list[Reading]
+
+
+WHITEBOARD_SCENE = ("What to draw: one idea, as two or three clearly separated subjects and what they are doing, on plain "
+                    "white with wide empty margins. No lighting, time of day, camera or colour words. No text or lettering "
+                    "in the picture.")
+
+
+class WhiteboardBeat(Beat):
+    scene: str = Field(description=WHITEBOARD_SCENE)
+
+
+class WhiteboardStoryboard(Storyboard):
+    """The same storyboard, asked for with the whiteboard description of a scene. Saved as a plain Storyboard."""
+    beats: list[WhiteboardBeat]
+
+
+def storyboard_model(style: str) -> type[Storyboard]:
+    """The reply shape Claude is asked for: the scene's description follows the [studio] style name."""
+    return WhiteboardStoryboard if is_whiteboard(style) else Storyboard
+
+
+SYSTEM = """You are the director of an illustrated teaching video. The audio is a Bible teacher's
+radio program; nothing in the audio may be changed. Your job is to plan what the viewer sees so
+that the pictures carry the argument: every picture must show the idea being spoken at that moment.
+Decorative pictures that merely fit the mood are a failure.
+
+You receive the program as numbered sentences with times. Refer to sentences only by id.
+
+Beats. Divide every sentence into consecutive beats (no gaps, no overlaps, in order, covering the
+first sentence through the last). Aim for the target beat length you are given; cut a beat where
+the thought turns, never mid-sentence. For each beat write a scene an illustrator can draw at once:
+concrete subject, action, setting, light and framing. Prefer people doing things, objects, places,
+maps without labels, hands, rolled scrolls, journeys, contrasts shown side by side. Vary the framing
+from beat to beat (wide, medium, close, overhead) so consecutive pictures feel like cuts in a film.
+Each picture is drawn on its own, without sight of the others, so describe every recurring person
+in full every time they appear (age, build, hair, clothing and its colours); never write "the same
+man" or point back to an earlier beat. Never place a person or event somewhere the speaker says they
+were not: if he says it was not in a palace, do not draw a palace. Never put text, letters or
+numbers in a picture. Never draw the speaker.
+
+Writing. The picture model cannot draw writing, so never ask for anything that would show it: no
+open scrolls or open books with columns of text, no letters, newsletters, newspapers, calendars,
+signs, labels, diagrams, charts, or notes covered in script. Show such objects closed, rolled, blank
+or turned away. Dates, lists and timelines belong on cards, never in pictures.
+
+Key phrases. At most one per beat, only when the speaker says something worth seeing in type. It
+must be consecutive words copied exactly from that beat's sentences. Leave it empty during
+scripture readings and on beats that have a card. A key phrase is shown as the speaker's own words,
+so it must be his own words: never take one from scripture he reads or quotes, from another author
+or publication he reads aloud (in the reference transcript such passages are set apart and often end
+with a short credit line naming the source), or from a [bracketed] note in the transcript. If you
+are unsure whose words they are, leave it empty.
+
+Cards. Use a card when the speaker lists, sequences, dates or defines: a list of reasons, a chain
+of events with months or years, a Greek or Hebrew word and its meaning. Cards are worth more than
+key phrases; use them wherever the content is structured, and nowhere else.
+
+Chapters. Three to six for a full half-hour program (two or three for a five-minute excerpt), each
+starting on a beat boundary, the first at sentence 0.
+
+Readings. List every stretch where the speaker reads or quotes scripture aloud, by sentence ids.
+Take the reference, version label and wording from the reference transcript when it has them.
+Do not list passages he only mentions.
+
+Hero beats. Mark the beats that most deserve animation; write every beat's motion line regardless."""
+
+_CINEMATIC_SCENES = """For each beat write a scene an illustrator can draw at once:
+concrete subject, action, setting, light and framing. Prefer people doing things, objects, places,
+maps without labels, hands, rolled scrolls, journeys, contrasts shown side by side. Vary the framing
+from beat to beat (wide, medium, close, overhead) so consecutive pictures feel like cuts in a film.
+Each picture is drawn on its own, without sight of the others, so describe every recurring person
+in full every time they appear (age, build, hair, clothing and its colours); never write "the same
+man" or point back to an earlier beat."""
+
+_WHITEBOARD_SCENES = """The pictures are drawn by a whiteboard illustrator in black
+ink with one orange accent on plain white paper. For each beat write a scene that shows one idea per
+picture: two or three clearly separated subjects on plain white with wide empty margins, and nothing
+filling the background. Say what each subject is, what it is doing and where it sits in the picture
+(left, right, middle); never mention lighting, time of day, camera shots or framing, or colours.
+Prefer objects, hands, simple figures doing things, maps without labels, rolled scrolls, journeys,
+contrasts shown side by side. People are simple generic figures: dot eyes, short strokes for brow
+and mouth, plain clothing; never portraits, never detailed faces. Never draw a single central robed
+figure addressing a seated group, never a shared-meal table of about a dozen people, and never glow,
+rays or light around or near anyone's head. Mention a lamp only when the scene truly needs one, and
+then call it a "clay oil lamp". Each picture is drawn on its own, without sight of the others: never
+point back to an earlier beat."""
+
+assert _CINEMATIC_SCENES in SYSTEM
+SYSTEM_WHITEBOARD = SYSTEM.replace(_CINEMATIC_SCENES, _WHITEBOARD_SCENES)
+
+
+def system_for(style: str) -> str:
+    """The planner's standing instructions for a [studio] style name: whiteboard rules for ink, the cinematic
+    rules (unchanged) for every other style."""
+    return SYSTEM_WHITEBOARD if is_whiteboard(style) else SYSTEM
+
+
+def forbids_close_faces(style: str) -> bool:
+    """True if a house-style text rules out faces in close-up ("No people's faces in close-up.")."""
+    for sentence in re.split(r"(?<=[.;!?])\s+", style or ""):
+        s = sentence.lower()
+        if (re.search(r"\bfaces?\b", s) and re.search(r"close[- ]?ups?\b|close up\b", s)
+                and re.search(r"\b(no|never|not|avoid|without)\b", s)):
+            return True
+    return False
+
+
+# Things that image models tend to draw with garbled writing on them. Warned about, never blocked.
+WRITING_PRONE = re.compile(
+    r"\b(scrolls?|books?|pages?|letters?|lettering|newsletters?|newspapers?|calendars?|signs?|signposts?|signboards?|"
+    r"labels?|labell?ed|diagrams?|charts?|notes?|notebooks?|notices?|inscriptions?|inscribed|writing|written|"
+    r"handwriting|script|text|words|parchments?|papyrus|documents?|tablets?|posters?|banners?|placards?|plaques?|"
+    r"menus?|ledgers?|manuscripts?|codex|codices|maps?|headstones?|gravestones?|tombstones?)\b", re.I)
+_SHOWN_SAFELY = re.compile(r"\b(closed|rolled|rolled-up|sealed|blank|unmarked|unlettered|folded|shut|no|without|"
+                           r"turned|face-down)\b", re.I)
+
+
+def lint_scene(scene: str) -> list[str]:
+    """Writing-prone words in a scene description, in order, unless the scene says the object is shown
+    closed, rolled, blank or turned away (within three words either side)."""
+    found: list[str] = []
+    for m in WRITING_PRONE.finditer(scene):
+        before = scene[:m.start()].split()[-3:]
+        after = scene[m.end():].split()[:3]
+        if any(_SHOWN_SAFELY.fullmatch(w.strip(".,;:!?()\"'").lower()) for w in before + after):
+            continue
+        word = m.group(0).lower()
+        if word not in found:
+            found.append(word)
+    return found
+
+
+# Words a whiteboard (ink) scene should not have: camera shots, time of day, lighting, colours, and anything that
+# can read as a halo. Warned about, never blocked. Longer alternatives come first so "golden hour" beats "golden".
+_STYLE_WORDS = (
+    r"close[- ]ups?|close shot|wide shot|medium shot|long shot|establishing shot|overhead|aerial|bird's[- ]eye|"
+    r"low[- ]angle|high[- ]angle|panoramic|panorama|cinematic|framing|camera|"
+    r"golden hour|dawn|dusk|sunrise|sunset|twilight|morning|noon|midday|afternoon|evening|night|nighttime|midnight|"
+    r"lamplight|lamplit|sunlight|sunlit|moonlight|moonlit|candlelight|candlelit|firelight|torchlight|starlight|"
+    r"lighting|lights?|lit|shadows?|silhouetted|silhouettes?|backlit|glows?|glowing|halos?|haloes|rays|beams?|"
+    r"sunbeams?|radiant|radiance|shining|aura|"
+    r"red|orange|yellow|green|blue|purple|violet|pink|crimson|scarlet|golden|gold|amber|teal|turquoise|brown|grey|gray|"
+    r"cream|ochre|umber|navy|indigo|colou?rs?|colou?red|colou?rful"
+)
+STYLE_PRONE = re.compile(rf"\b(?:{_STYLE_WORDS})\b", re.I)
+
+
+def lint_style(scene: str, style: str) -> list[str]:
+    """For a whiteboard style: camera, time-of-day, lighting, colour and halo-like words in a scene, in order of first
+    appearance. Empty for every other style, which is meant to have them."""
+    if not is_whiteboard(style):
+        return []
+    found: list[str] = []
+    for m in STYLE_PRONE.finditer(scene):
+        word = m.group(0).lower()
+        if word not in found:
+            found.append(word)
+    return found
+
+
+def _request(cfg: Config, sentences: list[Sentence], reference: str, layers: Layers, direction: str) -> str:
+    rules = [
+        f"Program: {cfg.ministry.program_name}. Speaker: {cfg.ministry.speaker or 'unknown'}.",
+        f"Target beat length: about {layers.beat_seconds:.0f} seconds (so roughly {max(1, round((sentences[-1].e - sentences[0].s) / layers.beat_seconds))} beats).",
+        f"Key phrases: {'yes' if layers.callouts else 'leave every key_phrase empty'}. Cards: {'yes' if layers.cards else 'set every card to null'}.",
+        f"depict_christ: {'true' if cfg.style.depict_christ else 'false. Never depict Jesus or God in any form, including as an infant; show the setting, the witnesses, hands, the manger, instead; never use light, glow or rays as a stand-in for Him'}.",
+    ]
+    if cfg.style.avoid:
+        rules.append("Avoid in pictures: " + "; ".join(cfg.style.avoid) + ".")
+    if forbids_close_faces(cfg.style.prompt) or forbids_close_faces(STYLES.get(cfg.studio.style, cfg.studio.style)):
+        rules.append("House style: no close-up faces. Show people at medium or wide distance, from behind, turned "
+                     "away or in silhouette; a close shot may show hands or objects, never a face.")
+    if cfg.ministry.audience_notes:
+        rules.append("Audience: " + cfg.ministry.audience_notes)
+    if direction.strip():
+        rules.append("Director's notes from the ministry (follow these): " + " ".join(direction.split()))
+    lines = "\n".join(f"[{s.id}] ({s.s:.1f}-{s.e:.1f}s) {s.text}" for s in sentences)
+    ref = f"\n\n<reference_transcript>\n{reference.strip()}\n</reference_transcript>" if reference.strip() else ""
+    return "\n".join(rules) + "\n\n<sentences>\n" + lines + "\n</sentences>" + ref
+
+
+class StoryboardFailed(RuntimeError):
+    """The storyboard call did not produce a usable plan. The message is written for the owner;
+    `charged` says whether Anthropic most likely billed for the attempt."""
+
+    def __init__(self, message: str, charged: bool, usd: float | None = None):
+        super().__init__(message)
+        self.charged = charged
+        self.usd = usd  # the cost from the reported token counts, when the reply got that far
+
+
+SHORTER = "Try a shorter stretch with --minutes, or a lower --level, then run the same command again."
+
+
+def _explain_api_error(exc: Exception, cfg: Config, started: bool = False) -> StoryboardFailed:
+    """Plain-English account of an Anthropic SDK error (classes from anthropic._exceptions)."""
+    import anthropic
+
+    model = cfg.extract.model
+    if isinstance(exc, anthropic.AuthenticationError):
+        return StoryboardFailed("Anthropic did not accept the API key, so no storyboard was made. Nothing was charged. "
+                                "Check the ANTHROPIC_API_KEY line in the .env file next to config.toml.", False)
+    if isinstance(exc, anthropic.PermissionDeniedError):
+        return StoryboardFailed(f"Anthropic says this API key may not use the model \"{model}\". Nothing was charged. "
+                                "Check the key in .env, or the model name under [extract] in config.toml.", False)
+    if isinstance(exc, anthropic.NotFoundError):
+        return StoryboardFailed(f"Anthropic does not recognise the model name \"{model}\". Nothing was charged. "
+                                "Check the model name under [extract] in config.toml.", False)
+    if isinstance(exc, anthropic.RateLimitError):
+        return StoryboardFailed("Anthropic is limiting how many requests this account can send right now. Nothing was charged. "
+                                "Wait a few minutes, then run the same command again.", False)
+    if isinstance(exc, anthropic.BadRequestError):
+        if "credit" in str(getattr(exc, "message", exc)).lower():
+            return StoryboardFailed("Anthropic says the account is out of credit. Nothing was charged. "
+                                    "Add credit in the Anthropic console, then run the same command again.", False)
+        return StoryboardFailed("Anthropic turned the storyboard request down as invalid. Nothing was charged. "
+                                "This needs a fix in the program; pass this note on to whoever maintains it: "
+                                f"{getattr(exc, 'message', exc)}", False)
+    paid = ("The reply had already started, so you were probably charged for part of it."
+            if started else "Probably nothing was charged, since no reply had started.")
+    if isinstance(exc, anthropic.InternalServerError):
+        return StoryboardFailed(f"Anthropic's service had a problem or was overloaded, so no storyboard was made. {paid} "
+                                "Wait a few minutes, then run the same command again.", started)
+    if isinstance(exc, anthropic.APIConnectionError):  # includes APITimeoutError
+        return StoryboardFailed(f"Could not reach Anthropic (the internet connection dropped or the request timed out). {paid} "
+                                "Check the connection, then run the same command again.", started)
+    if isinstance(exc, anthropic.APIStatusError):
+        return StoryboardFailed(f"Anthropic returned an error (code {exc.status_code}), so no storyboard was made. {paid} "
+                                "Run the same command again later; if it keeps happening, pass this note on.", started)
+    return StoryboardFailed(f"The storyboard request failed ({exc}). It is unclear whether anything was charged; "
+                            "check the usage page in the Anthropic console before trying again.", started)
+
+
+def storyboard_estimate(st, seconds: float) -> float:
+    """What a storyboard is expected to cost before it is made: the configured half-hour figure, pro-rated."""
+    return round(st.storyboard_usd * max(seconds / 1800.0, 0.1), 2)
+
+
+MAX_TOKENS = 64000  # the longest storyboard reply Claude may write (and be paid for)
+
+
+REFERENCE_ALLOWANCE = 150_000  # bytes allowed for the reference transcript before it is read (a half hour is ~30,000)
+REQUEST_OVERHEAD_TOKENS = 5_000  # message framing and the storyboard's output schema, generously
+
+
+def storyboard_ceiling(cfg: Config, sentences: list[Sentence], layers: Layers, direction: str = "",
+                       reference: str | None = None) -> float:
+    """The most one storyboard call could cost, so the budget cap holds even when the estimate is low. Input is
+    counted as one token per UTF-8 byte of the exact request (a byte-level tokenizer cannot use more), with
+    REFERENCE_ALLOWANCE standing in for a transcript not yet read, plus a fixed overhead, all at the dearest input
+    rate; output as a reply that runs all the way to MAX_TOKENS."""
+    st = cfg.studio
+    tokens = len((system_for(st.style) + _request(cfg, sentences, reference or "", layers, direction)).encode("utf-8"))
+    tokens += REQUEST_OVERHEAD_TOKENS + (REFERENCE_ALLOWANCE if reference is None else 0)
+    input_rate = max(st.claude_input_usd_per_mtok, st.claude_cache_write_usd_per_mtok)
+    return (tokens * input_rate + MAX_TOKENS * st.claude_output_usd_per_mtok) / 1e6
+
+
+def storyboard_cost(usage, st) -> float | None:
+    """US dollars for one call, from the token counts in the reply's `usage`; None if they are missing."""
+    if usage is None or getattr(usage, "input_tokens", None) is None or getattr(usage, "output_tokens", None) is None:
+        return None
+    try:
+        tokens = {k: int(getattr(usage, k, 0) or 0) for k in
+                  ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")}
+    except (TypeError, ValueError):
+        return None
+    return (tokens["input_tokens"] * st.claude_input_usd_per_mtok
+            + tokens["output_tokens"] * st.claude_output_usd_per_mtok
+            + tokens["cache_creation_input_tokens"] * st.claude_cache_write_usd_per_mtok
+            + tokens["cache_read_input_tokens"] * st.claude_cache_read_usd_per_mtok) / 1e6
+
+
+def make_storyboard(cfg: Config, sentences: list[Sentence], reference: str, layers: Layers, direction: str = "",
+                    client=None) -> tuple[Storyboard, float | None]:
+    """One streamed Claude call. Returns the storyboard and its cost in dollars from the reported token
+    counts (None if not reported). Every failure is raised as StoryboardFailed with a plain message."""
+    import anthropic
+    from pydantic import ValidationError
+
+    unreadable = StoryboardFailed("Claude's storyboard reply came back cut off or incomplete, so it could not be used. "
+                                  "You were probably charged for it. " + SHORTER, True)
+    started = False
+    shape = storyboard_model(cfg.studio.style)
+    try:
+        client = client or anthropic.Anthropic()
+        log.info("Storyboarding %d sentences with %s", len(sentences), cfg.extract.model)
+        with client.messages.stream(
+            model=cfg.extract.model,
+            max_tokens=MAX_TOKENS,
+            system=[{"type": "text", "text": system_for(cfg.studio.style), "cache_control": {"type": "ephemeral"}}],
+            output_config={"effort": "high"},
+            messages=[{"role": "user", "content": _request(cfg, sentences, reference, layers, direction)}],
+            output_format=shape,
+        ) as stream:
+            started = True  # the request was accepted; tokens are being generated and billed from here on
+            message = stream.get_final_message()
+    except ValidationError:
+        # The SDK parses the reply when the text block ends, before the stop reason arrives, so a reply cut off at
+        # max_tokens or abandoned by a refusal shows up here as unparseable JSON rather than as a stop reason.
+        raise unreadable from None
+    except anthropic.AnthropicError as exc:
+        raise _explain_api_error(exc, cfg, started) from exc
+    usd = storyboard_cost(getattr(message, "usage", None), cfg.studio)
+    if message.stop_reason == "refusal":
+        raise StoryboardFailed("Claude declined to storyboard this program. You may have been charged a little. "
+                               "Run the same command again; if it keeps happening, try a different stretch with --start and --minutes.", True, usd)
+    if message.stop_reason == "max_tokens":
+        raise StoryboardFailed("The storyboard was cut off because it ran too long. You were charged for it. " + SHORTER, True, usd)
+    board = getattr(message, "parsed_output", None)
+    if board is None:
+        text = "".join(b.text for b in message.content if b.type == "text")
+        try:
+            board = shape.model_validate_json(text)
+        except ValidationError:
+            unreadable.usd = usd
+            raise unreadable from None
+    if type(board) is not Storyboard:  # the whiteboard shape differs only in a field description
+        board = Storyboard.model_validate(board.model_dump())
+    return board, usd
+
+
+# ---------- grounding the storyboard in the word timings ----------
+
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9']+", " ", s.lower().replace("’", "'")).strip()
+
+
+def repair(board: Storyboard, n_sentences: int) -> Storyboard:
+    """Make beats contiguous over sentences 0..n-1, drop broken items, keep everything in range."""
+    last_id = n_sentences - 1
+    beats = sorted((b for b in board.beats if b.scene.strip()), key=lambda b: b.first)
+    fixed: list[Beat] = []
+    for b in beats:
+        first = fixed[-1].last + 1 if fixed else 0
+        last = min(max(b.last, first), last_id)
+        if first > last_id:
+            break
+        fixed.append(b.model_copy(update={"first": first, "last": last}))
+    if not fixed:
+        raise ValueError("storyboard has no usable beats")
+    fixed[-1] = fixed[-1].model_copy(update={"last": last_id})
+    starts = {b.first for b in fixed}
+    chapters = []
+    for c in sorted(board.chapters, key=lambda c: c.first):
+        snap = max((s for s in starts if s <= c.first), default=0)
+        if c.title.strip() and all(x.first != snap for x in chapters):
+            chapters.append(Chapter(first=snap, title=c.title.strip()))
+    if not chapters or chapters[0].first != 0:
+        chapters.insert(0, Chapter(first=0, title=board.title.strip() or "Introduction"))
+    readings = []
+    for r in sorted(board.readings, key=lambda r: r.first):
+        first, last = max(0, r.first), min(r.last, last_id)
+        if readings and first <= readings[-1].last:
+            first = readings[-1].last + 1
+        if first <= last and r.text.strip() and r.reference.strip():
+            readings.append(r.model_copy(update={"first": first, "last": last}))
+    for i, b in enumerate(fixed):
+        if b.card and not (1 <= len(b.card.items) <= 5):
+            fixed[i] = b.model_copy(update={"card": None})
+    return Storyboard(title=board.title, chapters=chapters, beats=fixed, readings=readings)
+
+
+NOT_HEARD = "not heard"
+IN_READING = "reading"
+DROP_REASONS = {
+    NOT_HEARD: "not heard in the audio during that picture",
+    IN_READING: "it falls during a scripture reading",
+    **attribution.REASONS,
+}
+
+
+def vet_key_phrases(board: Storyboard, words: list[Word], sentences: list[Sentence],
+                    spans: list[attribution.Span] | None, cards: bool) -> tuple[dict[int, list[tuple[str, float]]], list[tuple[int, str, str | None]]]:
+    """Which key phrases may be shown. A phrase is kept only if it is not during a scripture reading, is found
+    inside one stretch of the speaker's own words in the reference transcript (when there is one: `spans`), and
+    was really spoken during its beat. Returns {beat index: timed words} and [(beat index, phrase, reason)]."""
+    reading_ids = {i for r in board.readings for i in range(r.first, r.last + 1)}
+    timed: dict[int, list[tuple[str, float]]] = {}
+    dropped: list[tuple[int, str, str | None]] = []
+    for i, b in enumerate(board.beats):
+        phrase = b.key_phrase.strip()
+        if not phrase or (cards and b.card):
+            continue  # nothing to show, or the card is shown instead
+        if set(range(b.first, b.last + 1)) & reading_ids:
+            dropped.append((i, phrase, IN_READING))
+            continue
+        if spans is not None:
+            kind = attribution.whose(phrase, spans)
+            if kind != attribution.SPEAKER:
+                dropped.append((i, phrase, kind))
+                continue
+        hit = phrase_times(phrase, words, sentences[b.first].first, sentences[b.last].last)
+        if not hit:
+            dropped.append((i, phrase, NOT_HEARD))
+            continue
+        timed[i] = hit
+    return timed, dropped
+
+
+def phrase_times(phrase: str, words: list[Word], first: int, last: int) -> list[tuple[str, float]]:
+    """(word, start) for each word of a phrase found verbatim in words[first..last]; empty if absent."""
+    target = _norm(phrase).split()
+    if not target:
+        return []
+    span = [(i, _norm(words[i].w)) for i in range(first, last + 1)]
+    span = [(i, w) for i, w in span if w]
+    flat: list[tuple[int, str]] = []
+    for i, w in span:
+        for part in w.split():
+            flat.append((i, part))
+    for k in range(len(flat) - len(target) + 1):
+        if [p for _, p in flat[k:k + len(target)]] == target:
+            idxs = sorted({i for i, _ in flat[k:k + len(target)]})
+            return [(words[i].w.strip('"“”'), words[i].s) for i in idxs]
+    return []

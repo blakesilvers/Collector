@@ -1,0 +1,23 @@
+{
+ "env": {
+  "fonts": [
+   "C:/Windows/Fonts/seguibl.ttf",
+   "C:/Windows/Fonts/arialbd.ttf",
+   "C:/Windows/Fonts/arial.ttf",
+   "C:/Windows/Fonts/georgiab.ttf",
+   "C:/Windows/Fonts/georgiab.ttf"
+  ],
+  "pillow": "12.3.0"
+ },
+ "frames": {
+  "0.50": "bdf1ba3c39fc77f21480bcdae90495f3083b458a30ce9dff2a8f7a484ed57569",
+  "3.35": "537b7cfd05632e3e0af0d61362ac4d076575381343b863c095ae34f2b1c65415",
+  "4.50": "db949d9d9ea49ac72ea889e715e2aea160955e85b33a3b17c92b6856bd266fb7",
+  "5.30": "b6103614276527833877d5bd54c2c27cd792550c05eb858f0f649ee6b70c75b7",
+  "6.00": "c996a15658f6a6ec3bc830c1224a6cf39dab69f9fd8c03f827c5136babc809b5",
+  "8.00": "112fcd0558d3327c41bef92e56e6d338a2e6df9cb0384979789377f7fc5a9598",
+  "10.50": "06fd48fa30860998450a905ec299cf2df3005fd8da17698036cf7ec6815a2c8f",
+  "13.50": "5fd0db48992c2b05b8ecd1d5c0896e747e0600bb97b30b12b1a3daf6e58a8e00",
+  "15.80": "0dc2e8f376924c9f29475dca67b1c88befb9e31d003b2f7c14bf5251b3c7f0d7"
+ }
+}
