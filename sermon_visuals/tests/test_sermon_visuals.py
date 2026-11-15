@@ -1411,6 +1411,65 @@ def test_every_paid_attempt_counts_against_the_budget(workspace: Path, monkeypat
     assert len(provider.calls) == 3 and Motion.calls == 1 and ledger.data["usd"] <= 0.70 + 1e-9
 
 
+class _RefsProvider(FakeProvider):
+    """Records the names of the reference pictures sent with each request."""
+
+    def __init__(self):
+        super().__init__()
+        self.refs: list[list[str]] = []
+
+    def generate(self, prompt, aspect, references):
+        self.refs.append([Path(r).name for r in references])
+        return super().generate(prompt, aspect, references)
+
+
+def test_ink_reference_kit_replaces_the_anchors_and_configured_references_win(workspace: Path):
+    from sermon_visuals import imagegen
+    from sermon_visuals.studio import assets, plan
+    cfg = load_config(workspace / "config.toml")
+    a = workspace / "assets"
+    for name in ("cfg1.png", "cfg2.png", "kit1.png", "kit2.png", "kit3.png"):
+        make_art(a / name, size=(64, 36))
+    cfg2 = [a / "cfg1.png", a / "cfg2.png"]
+    kit = [a / "kit1.png", a / "kit2.png", a / "kit3.png"]
+    beats = [plan.Beat(first=i, last=i, scene=f"scene {i}", motion="m", hero=False, key_phrase="") for i in range(5)]
+
+    def run(tag, style, style_refs, configured):
+        cfg.studio.style, cfg.studio.style_refs, cfg.style.reference_images = style, list(style_refs), list(configured)
+        shots = [assets.Shot(index=i, start=i * 5.0, end=(i + 1) * 5.0, beat=b) for i, b in enumerate(beats)]
+        assets.assign_paths(shots, workspace / tag, "style", imagegen.content_guard(cfg), "m")
+        p = _RefsProvider()
+        assets.generate_assets(cfg, shots, "style", p, None, assets.Ledger(workspace / f"{tag}.json"), 0.1, 0.07, workers=1)
+        assert len(p.refs) == 5 and all(s.image.exists() for s in shots)
+        return p.refs, [s.image.name for s in shots]
+
+    # ink with a kit: the kit goes with every picture instead of the first two pictures, ahead of other references
+    refs, _ = run("k3", "ink", kit, cfg2)
+    assert refs == [["kit1.png", "kit2.png", "kit3.png"]] * 5
+    refs, _ = run("k2", "ink", kit[:2], cfg2)
+    assert refs == [["kit1.png", "kit2.png", "cfg1.png"]] * 5
+    # ink without a kit: the configured references are always sent; the anchors only fill the room left
+    refs, img = run("a", "ink", [], cfg2)
+    assert refs == [["cfg1.png", "cfg2.png"]] + [["cfg1.png", "cfg2.png", img[0]]] * 4
+    refs, img = run("a0", "ink", [], [])
+    assert refs == [[], [img[0]]] + [[img[0], img[1]]] * 3
+    # other styles: the kit is ignored and the old rule (the last three) is unchanged
+    refs, img = run("g", "graphic", kit, cfg2)
+    assert refs == [["cfg1.png", "cfg2.png"], ["cfg1.png", "cfg2.png", img[0]]] + [["cfg2.png", img[0], img[1]]] * 3
+
+
+def test_style_refs_load_from_the_assets_folder(workspace: Path):
+    text = (workspace / "config.toml").read_text(encoding="utf-8")
+    assert load_config(workspace / "config.toml").studio.style_refs == []
+    assert "\nstyle_refs = []" in text
+    (workspace / "config.toml").write_text(text.replace("\nstyle_refs = []", '\nstyle_refs = ["kit/one.png"]'), encoding="utf-8")
+    with pytest.raises(FileNotFoundError) as info:
+        load_config(workspace / "config.toml")
+    assert "studio.style_refs" in str(info.value)
+    make_art(workspace / "assets" / "kit" / "one.png", size=(64, 36))
+    assert load_config(workspace / "config.toml").studio.style_refs == [workspace / "assets" / "kit" / "one.png"]
+
+
 def test_picture_budget_within_reach_still_asks(workspace: Path, monkeypatch):
     cfg, run, calls, work = _gated_studio(workspace, monkeypatch)
     cfg.studio.image_usd = 0.10

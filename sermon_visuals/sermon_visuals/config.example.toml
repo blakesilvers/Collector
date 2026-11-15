@@ -101,6 +101,11 @@ style = "graphic"           # graphic | ink | woodcut | painterly, or write your
 # Ink style only: the hand-lettering font for key phrases and chapter titles (a font file name such as "segoeprb.ttf",
 # or a full path). Empty = Segoe Print Bold. Check a font's licence allows use in published video before switching.
 lettering_font = ""
+# Ink style only: a fixed reference kit, up to 3 pictures (relative to assets_dir) whose drawing style every picture
+# follows, e.g. ["ink_kit/place.png", "ink_kit/objects.png", "ink_kit/group.png"]. Used instead of the first two
+# pictures of the run. Empty = the first two pictures are the style references. Changing it does not redraw
+# pictures already made; use --redraw for that.
+style_refs = []
 # Director's notes: plain-English instructions the storyboard must follow. This is the main lever for taste.
 direction = """"""
 whisper_model = "small.en"  # local word timing; "base.en" is faster, "medium.en" more exact

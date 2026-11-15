@@ -235,6 +235,14 @@ The drawing analysis is cached beside the pictures (`assets/drawon/`), so a seco
 The lettering font for the ink style is one setting, `lettering_font` under `[studio]` (empty means
 Segoe Print Bold).
 
+To keep the ink look steady across a whole program, give it a fixed **reference kit**: up to three
+ink pictures you like, saved under `assets/` and listed as `style_refs` under `[studio]`. Every
+picture is then drawn with the kit as its style references, in place of the first two pictures of
+the run. Other configured reference images are sent after the
+kit, and no more than three references go with any one picture. Without a kit, the first two
+pictures of the run are the style references, after any configured reference images. Changing the
+kit does not redraw pictures already made; use `--redraw` for that.
+
 Taste lives in three settings under `[studio]` in `config.toml`: `style` (graphic, ink, woodcut,
 painterly, or your own sentence), `direction` (plain-English director's notes the storyboard must
 follow, e.g. "more maps and journeys, fewer interiors; show contrasts side by side"), and

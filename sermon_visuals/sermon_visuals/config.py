@@ -104,6 +104,9 @@ class Studio:
     style: str = "graphic"
     direction: str = ""
     lettering_font: str = ""  # hand lettering in the ink style; empty = Segoe Print Bold (see studio.render.LETTERING_FONT)
+    # Whiteboard styles (ink) only: a fixed reference kit of pictures (relative to assets_dir) sent with every picture
+    # request instead of the first two pictures of the run. Empty = the first two pictures are the style anchors.
+    style_refs: list[Path] = field(default_factory=list)
     fps: int = 24
     width: int = 1920
     height: int = 1080
@@ -216,8 +219,12 @@ def load_config(path: str | os.PathLike = "config.toml") -> Config:
         raise ValueError(f"compose.formats has unknown entries: {bad}")
 
     sd = raw.get("studio", {})
-    studio = Studio(**{k: sd[k] for k in Studio.__dataclass_fields__ if k in sd})
+    studio = Studio(**{k: sd[k] for k in Studio.__dataclass_fields__ if k in sd and k != "style_refs"})
     studio.direction = " ".join(str(studio.direction).split())
+    studio.style_refs = [paths.assets_dir / r for r in sd.get("style_refs", [])]
+    missing = [str(r) for r in studio.style_refs if not r.exists()]
+    if missing:
+        raise FileNotFoundError(f"studio.style_refs not found: {', '.join(missing)}")
     if not 1 <= int(studio.level) <= 5:
         raise ValueError(f"studio.level must be 1 to 5, got {studio.level}")
     return Config(paths, ministry, style, extract, transcribe, images, compose, video, verses, illustrate, studio)

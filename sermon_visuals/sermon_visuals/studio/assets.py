@@ -20,12 +20,14 @@ from PIL import Image, ImageDraw, ImageFont
 
 from ..config import Config
 from ..imagegen import ImageProvider, content_guard
+from .levels import is_whiteboard
 from .plan import Beat
 
 log = logging.getLogger(__name__)
 
 MAX_CLIP_SECONDS = 15
 MIN_CLIP_SECONDS = 3
+MAX_REFERENCES = 3  # reference pictures sent with one picture request
 
 
 @dataclass
@@ -308,6 +310,21 @@ class AssetReport:
     budget_stopped: str = ""  # plain-English note if paid work was skipped because the budget would be passed
 
 
+def picture_references(cfg: Config, anchors: list[Path]) -> list[Path]:
+    """The reference pictures sent with one picture request, at most MAX_REFERENCES.
+
+    Whiteboard styles: configured references always win over anchors (the first two pictures of the run). A fixed
+    style kit (`[studio] style_refs`) is used instead of the anchors, ahead of the other configured references;
+    without a kit the anchors only fill the room the configured references leave. Other styles keep the old rule:
+    the last MAX_REFERENCES of the configured references followed by the anchors."""
+    configured = list(cfg.illustrate.reference_images) + list(cfg.style.reference_images)
+    if not is_whiteboard(cfg.studio.style):
+        return (configured + list(anchors))[-MAX_REFERENCES:]
+    if cfg.studio.style_refs:
+        return (list(cfg.studio.style_refs) + configured)[:MAX_REFERENCES]
+    return (configured + list(anchors))[:MAX_REFERENCES]
+
+
 def generate_assets(
     cfg: Config,
     shots: list[Shot],
@@ -352,13 +369,17 @@ def generate_assets(
             todo.setdefault(s.image, s)
     pending = list(todo.values())
     total = len(pending)  # taken now: the style anchors are popped off `pending` below
-    base_refs = list(cfg.illustrate.reference_images) + list(cfg.style.reference_images)
     guard = content_guard(cfg)
+    kit = is_whiteboard(cfg.studio.style) and bool(cfg.studio.style_refs)
+    configured = len(cfg.studio.style_refs if kit else []) + len(cfg.illustrate.reference_images) + len(cfg.style.reference_images)
+    if pending and is_whiteboard(cfg.studio.style) and configured > MAX_REFERENCES:
+        log.warning("%d reference pictures are configured but only %d are sent with each picture; the first %d are used "
+                    "(style_refs first)", configured, MAX_REFERENCES, MAX_REFERENCES)
 
     def draw(s: Shot, refs: list[Path]) -> bool:
         prompt = image_prompt(style, s.beat.scene, guard)
         try:
-            data = _retry(lambda: paid(image_usd, lambda: provider.generate(prompt, "16:9", refs[-3:])), give_up=over_allowance)
+            data = _retry(lambda: paid(image_usd, lambda: provider.generate(prompt, "16:9", refs)), give_up=over_allowance)
             s.image.parent.mkdir(parents=True, exist_ok=True)
             if s.image.exists():  # a redraw: keep the old picture beside the new one, never lose it
                 install(s.image, data)
@@ -378,16 +399,19 @@ def generate_assets(
             return False
 
     # The first two pictures are drawn one after the other and become the style anchors for all the rest. A picture
-    # being redrawn is never an anchor: it would steer its replacement back toward itself.
+    # being redrawn is never an anchor: it would steer its replacement back toward itself. A whiteboard style with a
+    # fixed reference kit has no anchors: every picture is drawn from the kit, all in parallel.
     redrawn = {s.image for s in pending}
-    anchors: list[Path] = [s.image for s in shots if s.image and s.image.exists() and s.image not in redrawn][:2]
-    while pending and len(anchors) < 2:
+    anchors: list[Path] = [] if kit else \
+        [s.image for s in shots if s.image and s.image.exists() and s.image not in redrawn][:2]
+    while pending and not kit and len(anchors) < 2:
         s = pending.pop(0)
-        if draw(s, base_refs + anchors):
+        if draw(s, picture_references(cfg, anchors)):
             anchors.append(s.image)
     if pending:
+        refs = picture_references(cfg, anchors)
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-            list(pool.map(lambda s: draw(s, base_refs + anchors), pending))
+            list(pool.map(lambda s: draw(s, refs), pending))
 
     # Shots whose picture failed borrow their neighbour's, so the render always completes.
     for i, s in enumerate(shots):
