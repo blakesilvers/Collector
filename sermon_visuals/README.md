@@ -237,8 +237,8 @@ Segoe Print Bold).
 
 To keep the ink look steady across a whole program, give it a fixed **reference kit**: up to three
 ink pictures you like, saved under `assets/` and listed as `style_refs` under `[studio]`. Every
-picture is then drawn with the kit as its style references, in place of the first two pictures of
-the run. Other configured reference images are sent after the
+picture is then drawn with the kit as its style references (the model is told to copy only their
+drawing style, not their objects, people or layout), in place of the first two pictures of the run. Other configured reference images are sent after the
 kit, and no more than three references go with any one picture. Without a kit, the first two
 pictures of the run are the style references, after any configured reference images. Changing the
 kit does not redraw pictures already made; use `--redraw` for that.
@@ -266,8 +266,12 @@ changed without touching code. Reference images, when given, are sent with every
 look stays consistent across hundreds of programs; generate a few paintings you like, drop them in
 `assets/`, list them under `style.reference_images`.
 
-Adding a provider means implementing one method, `generate(prompt, aspect, references) -> bytes`, in
-`sermon_visuals/imagegen.py` and adding it to `make_provider`.
+Adding a provider means implementing one method,
+`generate(prompt, aspect, references, *, scene_reference=False) -> bytes`, in
+`sermon_visuals/imagegen.py` and adding it to `make_provider`. Put `imagegen.reference_preamble(scene_reference)`
+before the reference images and always send the whole prompt (it carries the content guard). Reference
+images are style-only by default: the model is told to copy their drawing style, not their objects,
+people or layout. `scene_reference=True` is used only when re-framing the chosen painting.
 
 ## Rough cost per program
 

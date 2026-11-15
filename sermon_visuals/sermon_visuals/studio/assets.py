@@ -98,7 +98,7 @@ class DraftArt:
     model = "draft"
     PALETTE = [(24, 44, 78), (150, 72, 28), (60, 82, 70), (92, 46, 62), (40, 40, 48), (120, 96, 40)]
 
-    def generate(self, prompt: str, aspect: str, references: list[Path]) -> bytes:
+    def generate(self, prompt: str, aspect: str, references: list[Path], *, scene_reference: bool = False) -> bytes:
         scene = prompt.split("SCENE:", 1)[-1].strip()
         h = int(hashlib.sha1(scene.encode()).hexdigest(), 16)
         base = self.PALETTE[h % len(self.PALETTE)]

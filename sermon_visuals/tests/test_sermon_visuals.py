@@ -77,7 +77,7 @@ class FakeProvider:
     def __init__(self):
         self.calls: list[str] = []
 
-    def generate(self, prompt: str, aspect: str, references) -> bytes:
+    def generate(self, prompt: str, aspect: str, references, *, scene_reference: bool = False) -> bytes:
         self.calls.append(prompt)
         import io
         buf = io.BytesIO()
@@ -525,6 +525,60 @@ def test_every_prompt_carries_the_content_guards(workspace: Path):
     for name, text in _all_prompts(cfg).items():
         for guard in (cfg.style.negative, NO_SCRIPT, NO_DIVINE, avoid):
             assert guard in text, f"{name} is missing: {guard}"
+
+
+def test_reference_preamble_is_style_only_and_the_guarded_prompt_is_always_sent(workspace: Path):
+    """No API call: the providers are built without their clients and given fakes that record what would be sent."""
+    import base64
+    from types import SimpleNamespace
+
+    from sermon_visuals import imagegen
+    cfg = load_config(workspace / "config.toml")
+    guard = imagegen.content_guard(cfg)
+    prompt = imagegen.build_prompt(cfg, "Two clay jars on a table.")
+    assert guard in prompt
+    refs = [make_art(workspace / "assets" / f"r{i}.png", size=(64, 36)) for i in (1, 2)]
+    style_only = imagegen.STYLE_REFERENCE_PREAMBLE
+    assert "only the drawing style" in style_only and "Do not copy their objects, people, setting or layout" in style_only
+
+    sent: list = []
+    reply = SimpleNamespace(candidates=[SimpleNamespace(content=SimpleNamespace(
+        parts=[SimpleNamespace(inline_data=SimpleNamespace(data=b"png"))]))])
+    gem = object.__new__(imagegen.GeminiProvider)
+    gem.model, gem.image_size = "m", "2K"
+    gem.client = SimpleNamespace(models=SimpleNamespace(generate_content=lambda **k: sent.append(k["contents"]) or reply))
+    assert gem.generate(prompt, "16:9", refs) == b"png"
+    assert sent[-1][0] == style_only and len(sent[-1]) == 4 and sent[-1][-1] == prompt
+    assert gem.generate(prompt, "16:9", []) == b"png" and sent[-1] == [prompt]
+    gem.generate(prompt, "1:1", refs[:1], scene_reference=True)
+    assert sent[-1][0] == imagegen.SCENE_REFERENCE_PREAMBLE and "do not copy" not in sent[-1][0].lower()
+    assert sent[-1][-1] == prompt
+
+    edits: list[str] = []
+    data = SimpleNamespace(data=[SimpleNamespace(b64_json=base64.b64encode(b"png").decode())])
+    oai = object.__new__(imagegen.OpenAIProvider)
+    oai.model = "m"
+    oai.client = SimpleNamespace(images=SimpleNamespace(edit=lambda **k: edits.append(k["prompt"]) or data,
+                                                        generate=lambda **k: edits.append(k["prompt"]) or data))
+    oai.generate(prompt, "16:9", refs)
+    assert edits[-1] == style_only + prompt
+    oai.generate(prompt, "16:9", [])
+    assert edits[-1] == prompt
+    oai.generate(prompt, "1:1", refs[:1], scene_reference=True)
+    assert edits[-1] == imagegen.SCENE_REFERENCE_PREAMBLE + prompt
+
+    # re-framing the chosen painting is the one place the reference is the scene itself
+    seen: list[dict] = []
+
+    class Recorder(FakeProvider):
+        def generate(self, prompt, aspect, references, **k):
+            seen.append(k)
+            return super().generate(prompt, aspect, references)
+
+    chosen = make_art(workspace / "art" / "concept1_1.png", size=(160, 90))
+    pipeline.art_for_format(cfg, SimpleNamespace(chosen_art=str(chosen), stem="btw-0001"), compose.FORMATS["square"],
+                            Recorder())
+    assert seen == [{"scene_reference": True}]
 
 
 def test_content_guard_fallback_and_depict_switch(workspace: Path):

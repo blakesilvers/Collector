@@ -87,7 +87,8 @@ def art_for_format(cfg: Config, m: Manifest, fmt: compose.Format, provider: imag
     if not out.exists():
         provider = provider or imagegen.make_provider(cfg)
         log.info("%s: re-framing %s for %s", m.stem, chosen.name, fmt.name)
-        out.write_bytes(provider.generate(imagegen.recompose_prompt(cfg, fmt.aspect), fmt.aspect, [chosen]))
+        out.write_bytes(provider.generate(imagegen.recompose_prompt(cfg, fmt.aspect), fmt.aspect, [chosen],
+                                          scene_reference=True))  # the painting itself is reworked, not just its style
     return out
 
 

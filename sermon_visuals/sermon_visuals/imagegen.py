@@ -53,11 +53,29 @@ def recompose_prompt(cfg: Config, aspect: str) -> str:
     )
 
 
+# Said before the reference pictures. Style references (the default) steer only the look: a reference kit or the
+# run's first pictures must not leak their lamps, stables or people into every later picture. A scene reference
+# is the picture itself being reworked (re-framing the chosen painting for another format).
+STYLE_REFERENCE_PREAMBLE = (
+    "The attached reference image(s) show only the drawing style to use: copy their line work, shading, colour palette "
+    "and texture, and nothing else. Do not copy their objects, people, setting or layout; draw only what is described "
+    "below. "
+)
+SCENE_REFERENCE_PREAMBLE = "Match the visual style of the attached reference image(s). "
+
+
+def reference_preamble(scene_reference: bool = False) -> str:
+    return SCENE_REFERENCE_PREAMBLE if scene_reference else STYLE_REFERENCE_PREAMBLE
+
+
 class ImageProvider(Protocol):
     name: str
     model: str
 
-    def generate(self, prompt: str, aspect: str, references: list[Path]) -> bytes: ...
+    def generate(self, prompt: str, aspect: str, references: list[Path], *, scene_reference: bool = False) -> bytes:
+        """`prompt` already carries the content guard and is always sent whole. `scene_reference` is True only when
+        the reference is the picture to rework; otherwise references are style-only."""
+        ...
 
 
 class GeminiProvider:
@@ -70,15 +88,15 @@ class GeminiProvider:
         self.image_size = image_size
         self.client = genai.Client()  # reads GEMINI_API_KEY
 
-    def generate(self, prompt: str, aspect: str, references: list[Path]) -> bytes:
+    def generate(self, prompt: str, aspect: str, references: list[Path], *, scene_reference: bool = False) -> bytes:
         from google.genai import types
         from PIL import Image
 
         contents: list = []
         if references:
-            contents.append("Match the visual style of the attached reference image(s). ")
+            contents.append(reference_preamble(scene_reference))
             contents.extend(Image.open(r) for r in references)
-        contents.append(prompt)
+        contents.append(prompt)  # the whole prompt, content guard included, on every path
         response = self.client.models.generate_content(
             model=self.model,
             contents=contents,
@@ -103,7 +121,7 @@ class OpenAIProvider:
         self.model = model
         self.client = OpenAI()  # reads OPENAI_API_KEY
 
-    def generate(self, prompt: str, aspect: str, references: list[Path]) -> bytes:
+    def generate(self, prompt: str, aspect: str, references: list[Path], *, scene_reference: bool = False) -> bytes:
         size = next((s for a, s in ASPECTS.values() if a == aspect), "1536x1024")
         if references:
             files = [open(r, "rb") for r in references]
@@ -111,7 +129,7 @@ class OpenAIProvider:
                 result = self.client.images.edit(
                     model=self.model,
                     image=files,
-                    prompt="Match the visual style of the attached reference image(s). " + prompt,
+                    prompt=reference_preamble(scene_reference) + prompt,
                     size=size,
                     n=1,
                 )
