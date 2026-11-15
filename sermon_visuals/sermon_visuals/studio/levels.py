@@ -62,9 +62,15 @@ STYLES = {
         "palette of deep navy, burnt orange, warm cream and antique gold, strong silhouettes, dramatic directional light, "
         "high contrast, subtle screen-print texture. Cinematic composition with one clear focal subject and open space around it."
     ),
+    # Chosen in a paid style test (2026-11-14): subjects drawn as separate icons on blank paper, no background, and
+    # one simple way of drawing every figure. Changing this text changes the cache key of every ink picture.
     "ink": (
-        "Hand-drawn black ink marker sketch on off-white paper, loose confident linework, light cross-hatching, generous white "
-        "space, one accent colour (burnt orange) used sparingly, the feel of a whiteboard illustrator's drawing."
+        "Whiteboard-explainer illustration in black felt-tip pen with a light grey marker wash and one burnt-orange accent "
+        "colour. Draw only the subjects named in the scene, each as a separate, self-contained drawing standing alone on "
+        "blank white paper with clear white space between them and wide empty margins, like icons drawn on a whiteboard; at "
+        "most a short ground line under a figure. No background: no room, walls, floor, landscape, horizon, sky, frame or "
+        "border. Simple generic figures: round heads, dot eyes, plain robes, no detailed faces. Every figure is drawn the "
+        "same simple way: round head, dot eyes, a plain head cloth or short hair, no wrinkles, no detailed beards."
     ),
     "woodcut": (
         "Modern woodcut / linocut print illustration, heavy carved black shapes, two spot colours (ochre and deep teal) on cream "

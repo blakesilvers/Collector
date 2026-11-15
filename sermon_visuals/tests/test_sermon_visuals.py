@@ -1769,10 +1769,37 @@ def test_ink_qc_measures_wash_colour_border_and_halos():
     assert not ink.qc(im).halo
 
 
+OLD_INK_STYLE = (  # the ink style text the about_christmas ink pictures (2026-11-13) were drawn with
+    "Hand-drawn black ink marker sketch on off-white paper, loose confident linework, light cross-hatching, generous white "
+    "space, one accent colour (burnt orange) used sparingly, the feel of a whiteboard illustrator's drawing."
+)
+
+
+def test_ink_style_text_is_the_style_test_winner():
+    import hashlib
+
+    from sermon_visuals.studio import assets
+    from sermon_visuals.studio.levels import STYLES
+    winner = ("Whiteboard-explainer illustration in black felt-tip pen with a light grey marker wash and one burnt-orange "
+              "accent colour. Draw only the subjects named in the scene, each as a separate, self-contained drawing standing "
+              "alone on blank white paper with clear white space between them and wide empty margins, like icons drawn on a "
+              "whiteboard; at most a short ground line under a figure. No background: no room, walls, floor, landscape, "
+              "horizon, sky, frame or border. Simple generic figures: round heads, dot eyes, plain robes, no detailed faces.")
+    figures = (" Every figure is drawn the same simple way: round head, dot eyes, a plain head cloth or short hair, no "
+               "wrinkles, no detailed beards.")
+    assert STYLES["ink"] == winner + figures
+    # the other styles are untouched, so their cached pictures keep their names
+    pinned = {"graphic": "b892e0509d04f085", "woodcut": "d047d4fcd02d7036", "painterly": "7896703fe7bef5c0"}
+    assert {k: hashlib.sha256(STYLES[k].encode()).hexdigest()[:16] for k in pinned} == pinned
+    # the ink pictures get new cache names: the old ones are not reused for the new wording
+    guard = "no text"
+    assert assets._key(assets.image_prompt(STYLES["ink"], "A jar.", guard)) != \
+        assets._key(assets.image_prompt(OLD_INK_STYLE, "A jar.", guard))
+
+
 def _real_ink_pictures() -> list[Path]:
     from sermon_visuals.imagegen import content_guard
     from sermon_visuals.studio import assets, plan
-    from sermon_visuals.studio.levels import STYLES
     from sermon_visuals.studio.run import shots_from
     root = HERE.parent
     work = root / "output" / "about_christmas" / "studio" / "clip_0000_0300"
@@ -1782,7 +1809,7 @@ def _real_ink_pictures() -> list[Path]:
     board = plan.Storyboard.model_validate_json((work / "storyboard_L3.json").read_text(encoding="utf-8"))
     sents = plan.sentences_from_words(plan.load_words(work / "words.json"))
     shots = shots_from(plan.repair(board, len(sents)), sents, 300.0)
-    assets.assign_paths(shots, work / "assets", STYLES["ink"], content_guard(cfg), cfg.studio.motion_model)
+    assets.assign_paths(shots, work / "assets", OLD_INK_STYLE, content_guard(cfg), cfg.studio.motion_model)
     found = [s.image for s in shots if s.image.exists()]
     return found if len(found) == len(shots) else []
 
