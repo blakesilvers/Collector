@@ -1882,6 +1882,50 @@ def test_ink_qc_measures_wash_colour_border_and_halos():
     assert not ink.qc(im).halo
 
 
+INK_NEW_FIXTURES = sorted((HERE / "fixtures" / "ink_new").glob("*.jpg"))  # two pictures in the new ink wording
+
+
+def test_stray_colour_is_measured_on_the_raw_picture():
+    from PIL import ImageDraw
+
+    from sermon_visuals.studio import ink
+    im = Image.new("RGB", (960, 540), (255, 255, 255))
+    d = ImageDraw.Draw(im)
+    d.line((100, 300, 800, 320), fill=(20, 20, 20), width=6)
+    d.rectangle((300, 100, 427, 220), fill=(40, 90, 200))      # a blue cloak: about 3% of the picture
+    # the clean-up turns it grey, so measured afterwards it is never seen; the picture check measures it raw
+    assert ink.qc(ink.normalize(im)).off_palette < 0.005
+    q = ink.check(im)
+    assert abs(q.off_palette - 0.03) < 0.005
+    assert any(r.startswith("stray colour") and "3.0%" in r for r in q.reasons())
+    small = Image.new("RGB", (960, 540), (255, 255, 255))
+    ImageDraw.Draw(small).rectangle((300, 100, 350, 150), fill=(40, 90, 200))   # about 0.5%: not worth a redraw
+    assert 0.003 < ink.check(small).off_palette < ink.STRAY_COLOUR and ink.check(small).reasons() == []
+    orange = Image.new("RGB", (960, 540), (255, 255, 255))
+    ImageDraw.Draw(orange).rectangle((300, 100, 427, 220), fill=(215, 110, 40))  # the accent itself is never stray
+    assert ink.check(orange).off_palette == 0
+
+
+def test_picture_check_flags_stray_colour_on_old_ink_pictures_only(capsys):
+    """Old ink pictures with stray colour (fixtures/ink: beat 14 is mostly blue and green, beat 4 yellow and red) are
+    flagged; pictures in the new ink wording (fixtures/ink_new) and the clean old ones are not."""
+    from sermon_visuals.studio import ink, plan
+    from sermon_visuals.studio.assets import Shot
+    from sermon_visuals.studio.run import report_picture_check
+    old = {p.stem: p for p in INK_FIXTURES}
+    assert len(INK_NEW_FIXTURES) == 2
+    for p in INK_NEW_FIXTURES + [old["beat01"], old["beat10"], old["beat20"]]:
+        assert ink.check(Image.open(p)).off_palette < 0.005, p.name
+    for name in ("beat04", "beat14"):
+        assert ink.check(Image.open(old[name])).off_palette > 0.03, name
+    beat = plan.Beat(first=0, last=0, scene="s", motion="", hero=False, key_phrase="")
+    pics = [old["beat14"], INK_NEW_FIXTURES[0], old["beat04"], INK_NEW_FIXTURES[1]]
+    report_picture_check([Shot(index=i, start=i, end=i + 1, beat=beat, image=p) for i, p in enumerate(pics)], 0.10)
+    out = capsys.readouterr().out
+    assert "Beat 1: stray colour" in out and "Beat 3: stray colour" in out
+    assert "Beat 2:" not in out and "Beat 4:" not in out and "--redraw 1,3" in out
+
+
 OLD_INK_STYLE = (  # the ink style text the about_christmas ink pictures (2026-11-13) were drawn with
     "Hand-drawn black ink marker sketch on off-white paper, loose confident linework, light cross-hatching, generous white "
     "space, one accent colour (burnt orange) used sparingly, the feel of a whiteboard illustrator's drawing."
@@ -1934,11 +1978,16 @@ def test_ink_normalize_on_the_real_ink_pictures():
     if not pictures:
         pytest.skip("the about_christmas ink pictures are not on this computer")
     assert len(pictures) == 21
+    stray = []
     for path in pictures:
         with Image.open(path) as im:
             small = im.convert("RGB").resize((im.width // 2, im.height // 2), Image.BOX)
         q = ink.qc(ink.normalize(small))
         assert q.border_lum >= 0.97 and q.off_palette < 0.005, (path.name, q)
+        stray.append(ink.stray_colour(small))
+    # measured raw, beat 14 (mostly blue and green) is the worst offender, at about 11% of the picture
+    assert stray[13] > 0.1 and max(stray) == stray[13]
+    assert stray[0] < 0.005 and stray[4] < 0.005
 
 
 # ---------- redrawing chosen beats, and the picture check after generation ----------

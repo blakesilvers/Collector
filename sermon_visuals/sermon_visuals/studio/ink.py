@@ -2,8 +2,9 @@
 
 The picture model draws "ink on paper" as a photograph of a sketchbook: warm grey paper, a vignette, the page
 edge and binding, a strip of wooden desk in a corner, and stray colours beside the orange accent. `normalize`
-turns that back into a drawing on clean white paper for the video; `qc` measures what is left so the owner can be
-told which pictures may be worth redrawing. Both work on a copy: cached picture files are never modified.
+turns that back into a drawing on clean white paper for the video; `qc` measures what is left, and `check` (the
+picture check) adds the stray colour of the raw picture, so the owner can be told which pictures may be worth
+redrawing. Both work on a copy: cached picture files are never modified.
 
 Everything here is plain numpy on a small working copy for the measurements, applied at full size."""
 
@@ -23,6 +24,7 @@ BORDER = 0.02               # the border strip qc measures: 2% of the shorter si
 MARGIN_FADE = 0.04          # the outer margin gently faded to white: 4% of the shorter side
 EDGE_SEARCH = 0.06          # how deep (share of the side) a page edge or desk strip is looked for
 WORK_SIZE = 720             # long side of the working copy used for measurements
+STRAY_COLOUR = 0.01         # share of the raw picture in stray colour above which the picture check reports it
 
 
 # ---------- small numpy helpers ----------
@@ -218,7 +220,9 @@ def normalize(img: Image.Image) -> Image.Image:
 @dataclass
 class Quality:
     grey_wash: float          # share of the picture covered by mid-grey shading (wash or dense hatching)
-    off_palette: float        # share of the picture in saturated colours other than the orange accent and browns
+    # share of the picture in saturated colours other than the orange accent and browns. `normalize` turns these
+    # grey, so `check` measures this one on the raw picture
+    off_palette: float
     border_lum: float         # mean brightness (0..1, relative luminance of sRGB values) of the outer 2% strip
     halo: bool                # an orange blob in the upper third next to a head-like shape (best effort)
     halo_boxes: list[tuple[int, int, int, int]] = field(default_factory=list)  # (x0, y0, x1, y1) in the image
@@ -228,6 +232,9 @@ class Quality:
         out = []
         if self.grey_wash > 0.30:
             out.append(f"heavy grey shading over {self.grey_wash:.0%} of the picture")
+        if self.off_palette > STRAY_COLOUR:
+            out.append(f"stray colour (not black, grey or the orange accent) over {self.off_palette:.1%} of the picture; "
+                       "the video shows it in grey")
         if self.border_lum < 0.97:
             out.append("the edges are still not clean white paper (the drawing runs to the edge, or a desk is in shot)")
         if self.halo:
@@ -318,6 +325,26 @@ def _halo_boxes(rgb: np.ndarray, scale: float) -> list[tuple[int, int, int, int]
     return boxes
 
 
+def _stray(rgb: np.ndarray, hue: np.ndarray, sat: np.ndarray) -> np.ndarray:
+    """Saturated, not-dark pixels whose hue is outside the accent and its ramp."""
+    return (sat > 0.25) & (rgb.max(-1) > 0.15) & (_accent_weight(hue) <= 0.0)
+
+
+def stray_colour(img: Image.Image) -> float:
+    """Share of the picture in stray colour, on the picture as given (call it on the raw picture)."""
+    rgb, _ = _small(img)
+    hue, sat = _hue_sat(rgb)
+    return float(_stray(rgb, hue, sat).mean())
+
+
+def check(img: Image.Image) -> Quality:
+    """The picture check on a raw picture: wash, edges and halo as it will be shown (after `normalize`); stray
+    colour on the raw picture, because `normalize` turns it grey and it would never be seen there."""
+    q = qc(normalize(img))
+    q.off_palette = stray_colour(img)
+    return q
+
+
 def qc(img: Image.Image) -> Quality:
     rgb, s = _small(img)
     H, W = rgb.shape[:2]
@@ -325,7 +352,7 @@ def qc(img: Image.Image) -> Quality:
     hue, sat = _hue_sat(rgb)
     soft = _blur(lum, 1)
     grey = (soft >= 0.25) & (soft <= 0.85) & (sat < 0.25)
-    off = (sat > 0.25) & (rgb.max(-1) > 0.15) & (_accent_weight(hue) <= 0.0)
+    off = _stray(rgb, hue, sat)
     b = max(1, round(BORDER * min(H, W)))
     strip = np.concatenate([lum[:b].ravel(), lum[-b:].ravel(), lum[b:-b, :b].ravel(), lum[b:-b, -b:].ravel()])
     boxes = _halo_boxes(rgb, s)

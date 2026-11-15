@@ -164,8 +164,9 @@ def mark_redraw(shots: list[assets.Shot], n_beats: int, redraw: list[int] | None
 
 
 def report_picture_check(shots: list[assets.Shot], image_usd: float) -> None:
-    """Ink style: measure each picture as it will be shown (after the clean-up) and list, in plain words, the ones
-    that may be worth redrawing. A warning only; the video is still made with them."""
+    """Ink style: measure each picture as it will be shown (after the clean-up; stray colour, which the clean-up
+    turns grey, on the picture as drawn) and list, in plain words, the ones that may be worth redrawing. A warning
+    only; the video is still made with them."""
     reasons: dict[Path, list[str]] = {}
     flagged: list[tuple[int, list[str]]] = []
     for s in shots:
@@ -176,7 +177,7 @@ def report_picture_check(shots: list[assets.Shot], image_usd: float) -> None:
                 with Image.open(s.image) as im:
                     small = im.convert("RGB")
                 small.thumbnail((1376, 1376))
-                reasons[s.image] = ink.qc(ink.normalize(small)).reasons()
+                reasons[s.image] = ink.check(small).reasons()
             except Exception as exc:  # a warning only: never let the check stop the run
                 reasons[s.image] = [f"could not be checked ({type(exc).__name__})"]
         if reasons[s.image]:

@@ -217,8 +217,9 @@ Useful switches: `--draft` (free placeholder pictures, to judge pacing before pa
 and asked first, and the old pictures are kept beside the new ones as `...before-redraw.png`).
 
 With `style = "ink"`, each run ends its picture step with a short **picture check**: beats whose
-picture has heavy grey shading, edges that are not clean paper, or orange that may read as a halo,
-each with the reason. It is a warning only; use `--redraw` on the ones you agree with.
+picture has heavy grey shading, edges that are not clean paper, orange that may read as a halo, or
+stray colour (anything but black, grey and the orange accent over more than about 1% of the picture
+as drawn; the video shows it in grey), each with the reason. It is a warning only; use `--redraw` on the ones you agree with.
 
 With `style = "ink"`, each new picture is **drawn on** rather than dissolved in: the page clears, then
 the picture is built item by item (lines, then grey wash, then orange) before the camera starts to
