@@ -16,6 +16,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+# Optional: ink pictures are drawn on stroke by stroke (pen order) instead of by the simpler ink flow.
+strokes = ["opencv-python-headless>=4.8", "scikit-image>=0.22"]
 
 [project.scripts]
 sermon-visuals = "sermon_visuals.cli:main"
