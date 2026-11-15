@@ -198,8 +198,9 @@ def report_drawn_build(tl: render.Timeline, shots: list[assets.Shot]) -> None:
     if not (tl.theme.drawn and tl.ink_in):
         return
     puffs = [shots[k].index + 1 for k, s in enumerate(tl.shots) if s.entrance == "puff"]
-    print("  Pictures are drawn on, item by item" + (f"; beat{'s' if len(puffs) > 1 else ''} {', '.join(map(str, puffs))} "
-                                                     "puff in instead (if the picture splits cleanly)." if puffs else "."))
+    print("  Pictures are drawn on, item by item" + (
+        f"; beat{'s' if len(puffs) > 1 else ''} {', '.join(map(str, puffs))} {'puff' if len(puffs) > 1 else 'puffs'} in "
+        "instead (if the picture splits cleanly)." if puffs else "."))
     if not drawon.strokes_available():
         print(f"  {drawon.STROKES_NOTE}")
 

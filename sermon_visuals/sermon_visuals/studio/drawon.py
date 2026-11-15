@@ -35,7 +35,7 @@ from PIL import Image, ImageDraw, ImageFilter
 
 log = logging.getLogger(__name__)
 
-VERSION = 1                 # bump whenever the analysis changes, so older cached analyses are not reused
+VERSION = 2                # bump whenever the analysis changes, so older cached analyses are not reused
 LINE, WASH, ORANGE, PUFFED = 0, 1, 2, 3
 BAND = 16000                # codes per class in the packed uint16 map (4 classes)
 SOFT = np.array([0.12, 0.40, 0.30, 0.06], np.float32)  # seconds a pixel of each class takes to come in
@@ -124,6 +124,10 @@ def paper_small(S: np.ndarray, k: int = 8) -> np.ndarray:
     c = np.asarray(small.filter(ImageFilter.MaxFilter(15)).filter(ImageFilter.MinFilter(15)), np.float32)
     sm = np.asarray(small, np.float32)
     ref = np.percentile(sm.reshape(-1, 3), 85, axis=0)
+    if float(_lum(ref[None, None, :])[0, 0]) >= 235:
+        # clean white paper (the ink clean-up has already made it so): the blank sheet is that colour all over, so
+        # no faint ghost of a dark wash shows on the page before the drawing starts
+        return np.ascontiguousarray(np.broadcast_to(np.round(ref).astype(np.uint8), sm.shape)).copy()
     cl = c / 255.0
     csat = (cl.max(axis=2) - cl.min(axis=2)) / np.maximum(cl.max(axis=2), 1e-3)
     ref_lum = float(_lum(ref[None, None, :])[0, 0])
@@ -999,12 +1003,14 @@ class ShotBuild:
                 loc = tw[mw]
                 loc = (loc - loc.min()) / max(float(loc.max() - loc.min()), 1e-6)
                 start[mw] = np.where(cls[mw] == ORANGE, a + (b - a) * (0.72 + 0.18 * loc), a + (b - a) * (0.50 + 0.38 * loc))
-        # wash and colour never before the line work around them
+        # wash and colour never before the line work around them; their timing is softened across item borders
+        # (which follow an 8-pixel grid) so a dark wash never comes in with a stepped edge
         drawn = cls != PUFFED
         ls = np.where(line & drawn, start, 0.0).astype(np.float32)
         loc = _up(_maxf(_blockmax(ls, 8), 7), W, H)
         later = drawn & ~line
-        start = np.where(later, np.maximum(start, loc + 0.12), start)
+        smooth = _up(_blur(_box(start, 4), 3), W, H)
+        start = np.where(later, np.maximum(smooth, loc + 0.12), start)
         soft = SOFT[cls]
         start = np.minimum(start, self.end - soft)  # every pixel is finished by the end
         self.T_code = self.end + 0.5
